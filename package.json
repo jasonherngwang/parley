@@ -1,0 +1,38 @@
+{
+  "name": "parley",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev:api": "cd apps/api && next dev -p 3000",
+    "dev:worker": "tsx apps/worker/index.ts",
+    "build:api": "cd apps/api && next build",
+    "typecheck": "tsc -p apps/api/tsconfig.json --noEmit && tsc -p apps/worker/tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@temporalio/activity": "^1.12.0",
+    "@temporalio/client": "^1.12.0",
+    "@temporalio/worker": "^1.12.0",
+    "@temporalio/workflow": "^1.12.0",
+    "@xyflow/react": "^12.0.0",
+    "autoprefixer": "^10.0.0",
+    "better-sqlite3": "^11.0.0",
+    "next": "^15.0.0",
+    "postcss": "^8.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwindcss": "^4.0.0",
+    "@tailwindcss/postcss": "^4.0.0"
+  },
+  "devDependencies": {
+    "@temporalio/testing": "^1.12.0",
+    "@types/better-sqlite3": "^7.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0",
+    "nodemon": "^3.0.0"
+  }
+}

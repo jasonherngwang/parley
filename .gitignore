@@ -1,0 +1,7 @@
+/.claude
+/docs
+/node_modules
+apps/api/.next
+apps/api/node_modules
+apps/worker/node_modules
+**/*.tsbuildinfo
