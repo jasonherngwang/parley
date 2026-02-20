@@ -1,5 +1,5 @@
 import { NativeConnection, Worker } from '@temporalio/worker';
-import * as activities from './activities/mock';
+import * as activities from './activities/fetchGitHubPRDiff';
 
 async function run() {
   const address = process.env.TEMPORAL_ADDRESS ?? 'localhost:7233';

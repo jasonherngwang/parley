@@ -27,7 +27,13 @@ export async function GET(request: Request) {
             try {
               const client = await getTemporalClient();
               const handle = client.workflow.getHandle(active.workflowId);
-              const state = await handle.query<{ status: string; input: string }>('getReviewState');
+              const state = await handle.query<{
+                status: string;
+                prUrl: string;
+                title?: string;
+                repoName?: string;
+                prNumber?: number;
+              }>('getReviewState');
 
               send({ type: state.status, ...state });
 

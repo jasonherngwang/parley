@@ -1,14 +1,36 @@
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getTemporalClient } from '@lib/temporal';
 import { getActiveWorkflow, setActiveWorkflow } from '@lib/db';
+import { parseGitHubPRUrl } from '@lib/github';
+
+const startBodySchema = z.object({
+  prUrl: z.string().min(1, 'PR URL is required'),
+  context: z.string().optional(),
+});
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const input = body.input;
+    const parsed = startBodySchema.safeParse(body);
 
-    if (!input || typeof input !== 'string' || input.trim().length === 0) {
-      return NextResponse.json({ error: 'Input is required' }, { status: 400 });
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+        { status: 400 }
+      );
+    }
+
+    const { prUrl, context } = parsed.data;
+
+    // Validate URL format before starting workflow
+    try {
+      parseGitHubPRUrl(prUrl.trim());
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : 'Invalid GitHub PR URL' },
+        { status: 400 }
+      );
     }
 
     const existing = getActiveWorkflow();
@@ -25,7 +47,7 @@ export async function POST(request: Request) {
     await client.workflow.start('reviewWorkflow', {
       taskQueue: 'review-fast',
       workflowId,
-      args: [{ input: input.trim() }],
+      args: [{ prUrl: prUrl.trim(), context: context?.trim() || undefined }],
     });
 
     setActiveWorkflow(workflowId);
