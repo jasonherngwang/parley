@@ -35,8 +35,8 @@
 | 1 | Infrastructure & Hello World tracer | COMPLETE | — |
 | 2 | GitHub PR submission | COMPLETE | - |
 | 3 | Parallel specialist agents (streaming) | COMPLETE | — |
-| 4 | Parallel challenge phase (Mutineer + human window + arbitration) | READY | — |
-| 5 | Synthesis, verdict, and run history | BLOCKED | #4 |
+| 4 | Parallel challenge phase (Mutineer + human window + arbitration) | COMPLETE | — |
+| 5 | Synthesis, verdict, and run history | READY | — |
 | 6 | Educational layer, pirate personas, Continue-As-New, polish | BLOCKED | #5 |
 
 ---

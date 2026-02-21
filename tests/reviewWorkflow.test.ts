@@ -4,6 +4,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import type { PRDiffResult } from '../apps/worker/activities/fetchGitHubPRDiff';
 import type { SpecialistResult } from '../apps/worker/activities/specialists';
+import type { MutineerResult } from '../apps/worker/activities/mutineer';
+import type { ArbitrationDecision } from '../apps/worker/activities/arbitrator';
 
 const FIXTURE_DIFF = `--- a/src/auth.ts
 +++ b/src/auth.ts
@@ -30,6 +32,15 @@ const mockSpecialist = async (): Promise<SpecialistResult> => ({
   rawText: 'Mock specialist output',
 });
 
+const mockMutineer = async (): Promise<MutineerResult> => ({
+  challenges: [],
+});
+
+const mockArbitrator = async (): Promise<ArbitrationDecision> => ({
+  ruling: 'upheld',
+  reasoning: 'Mock arbitration ruling.',
+});
+
 describe('reviewWorkflow (Issue #2)', () => {
   let testEnv: TestWorkflowEnvironment;
 
@@ -51,6 +62,8 @@ describe('reviewWorkflow (Issue #2)', () => {
         runIronjaw: mockSpecialist,
         runBarnacle: mockSpecialist,
         runGreenhand: mockSpecialist,
+        runMutineer: mockMutineer,
+        runArbitrator: mockArbitrator,
       },
     });
 
@@ -88,6 +101,8 @@ describe('reviewWorkflow (Issue #2)', () => {
         runIronjaw: mockSpecialist,
         runBarnacle: mockSpecialist,
         runGreenhand: mockSpecialist,
+        runMutineer: mockMutineer,
+        runArbitrator: mockArbitrator,
       },
     });
 
@@ -119,6 +134,8 @@ describe('reviewWorkflow (Issue #2)', () => {
         runIronjaw: mockSpecialist,
         runBarnacle: mockSpecialist,
         runGreenhand: mockSpecialist,
+        runMutineer: mockMutineer,
+        runArbitrator: mockArbitrator,
       },
     });
 

@@ -76,3 +76,32 @@ Gotchas:
 pnpm typecheck: PASS
 pnpm test: 29/29 PASS
 
+---
+
+Issue #4 — Parallel challenge phase (Mutineer + human window + arbitration) (COMPLETE, 2026-02-21)
+
+New files:
+- apps/worker/activities/mutineer.ts: runMutineer activity — receives allFindings per specialist + capPerSpecialist, streams tokens via heartbeat (same pattern as specialists), then extracts structured challenges with generateText+Output.object. Returns { challenges: Array<{ findingId, specialistName, challengeText }> }.
+- apps/worker/activities/arbitrator.ts: runArbitrator activity — receives { finding, mutineerChallenge?, humanChallenge? }, calls generateText+Output.object with a neutral ruling prompt. Returns { ruling: 'upheld'|'overturned'|'inconclusive', reasoning }. Falls back to upheld/inconclusive on null structured output.
+- apps/api/app/api/review/extend/route.ts: POST /api/review/extend — sends extendReviewWindow Signal.
+- apps/api/app/api/review/challenges/route.ts: POST /api/review/challenges — sends submitChallenges Update, returns { accepted: true }.
+- tests/mutineer.test.ts: 7 unit tests (mock ai + @temporalio/activity).
+- tests/arbitrator.test.ts: 7 unit tests.
+- tests/reviewWorkflowChallenge.test.ts: 8 workflow integration tests for the challenge phase.
+
+Changed files:
+- apps/worker/workflows/reviewWorkflow.ts: Added ArbitrationState, MutineerStatus types. Extended ReviewState with windowOpen, secondsRemaining, humanChallenges, mutineerStatus, mutineerChallenges, arbitrations. Defined extendReviewWindow Signal + submitChallenges Update (registered EARLY, before any await, to avoid missed-handler errors). After Join Gate 1: opens window (600s), runs Mutineer in parallel (Join Gate 2). After Join Gate 2: merges Mutineer + human challenges per finding, fans out one runArbitrator per disputed finding in parallel. WINDOW_TICK_S=600 (single countdown iteration — fewest Temporal WFTs for tests).
+- apps/worker/index.ts: registered mutineerActivities + arbitratorActivities on the review-fast worker.
+- apps/api/app/page.tsx: Added MutineerPanel (streaming status + challenge count), HumanReviewPanel (countdown timer, per-finding textboxes, Extend/Submit buttons), ArbitrationPanel (ruling badges per finding). handleExtend and handleSubmitChallenges callbacks wired to new API routes.
+- tests/reviewWorkflow.test.ts + reviewWorkflowSpecialists.test.ts: added mockMutineer + mockArbitrator to all workers (all registered activities required).
+
+Gotchas:
+- wf.setHandler TypeScript overload resolution: for UpdateDefinition<Ret, [Args]> the TS overloads can't match branded types. Fix: omit explicit handler parameter type (let TypeScript infer from the definition). Cannot use the options.validator parameter without hitting the same overload issue.
+- Handler body throws → workflow-task failure + retry loop (not a proper update rejection). Root cause: a validator (options.validator) would reject properly, but the options argument triggers the TS overload bug. Fix: never throw in the handler body; instead, accept challenges at any point during 'running' status so the handler never needs to throw.
+- Time-skipping race with executeUpdate: in TestWorkflowEnvironment.createTimeSkipping(), the 600s timer fires before the executeUpdate gRPC lands, so the update arrived when windowOpen=false, causing workflow-task failure (not update rejection). Fix: accept challenges regardless of windowOpen state. Timer-based window closure now happens naturally; challenges stored in humanChallenges regardless.
+- Test isolation: shared TestWorkflowEnvironment caused cascade failures when one test timed out (stale worker references). Fix: each test creates and tears down its own TestWorkflowEnvironment via a withEnv() helper.
+- Promise.all([executeUpdate, result()]): concurrent dispatch ensures both RPCs are in flight simultaneously, which is enough for normal delivery ordering.
+
+pnpm typecheck: PASS
+pnpm test: 51/51 PASS
+

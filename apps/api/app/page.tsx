@@ -12,6 +12,8 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
+// ── Types ──────────────────────────────────────────────────────────────────────
+
 type SpecialistStatus =
   | 'pending'
   | 'running'
@@ -19,17 +21,35 @@ type SpecialistStatus =
   | 'timed-out'
   | 'failed';
 
+type MutineerStatus = 'pending' | 'running' | 'complete' | 'failed';
+
+interface Finding {
+  id: string;
+  severity: 'critical' | 'major' | 'minor';
+  description: string;
+  lineReference?: number;
+  recommendation: string;
+}
+
 interface SpecialistState {
   status: SpecialistStatus;
   attemptNumber: number;
   partialOutput?: string;
-  findings: Array<{
-    id: string;
-    severity: 'critical' | 'major' | 'minor';
-    description: string;
-    lineReference?: number;
-    recommendation: string;
-  }> | null;
+  findings: Finding[] | null;
+}
+
+interface MutineerChallenge {
+  findingId: string;
+  specialistName: string;
+  challengeText: string;
+}
+
+interface ArbitrationState {
+  findingId: string;
+  status: 'pending' | 'running' | 'complete';
+  ruling?: 'upheld' | 'overturned' | 'inconclusive';
+  reasoning?: string;
+  challengeSources: Array<'mutineer' | 'human'>;
 }
 
 interface Specialists {
@@ -46,6 +66,13 @@ type RunningState = {
   repoName?: string;
   prNumber?: number;
   specialists?: Specialists;
+  windowOpen?: boolean;
+  secondsRemaining?: number;
+  humanChallenges?: Record<string, string>;
+  mutineerStatus?: MutineerStatus;
+  mutineerPartialOutput?: string;
+  mutineerChallenges?: MutineerChallenge[];
+  arbitrations?: ArbitrationState[];
 };
 type CompleteState = {
   type: 'complete';
@@ -54,10 +81,15 @@ type CompleteState = {
   repoName?: string;
   prNumber?: number;
   specialists?: Specialists;
+  windowOpen?: boolean;
+  secondsRemaining?: number;
+  mutineerStatus?: MutineerStatus;
+  mutineerChallenges?: MutineerChallenge[];
+  arbitrations?: ArbitrationState[];
 };
 type AppState = FloorOpenState | RunningState | CompleteState;
 
-// --- Specialist node custom component ---
+// ── Specialist Node ────────────────────────────────────────────────────────────
 
 interface SpecialistNodeData {
   name: string;
@@ -204,7 +236,7 @@ const nodeTypes: NodeTypes = {
   specialist: SpecialistNode as unknown as NodeTypes['specialist'],
 };
 
-// --- DAG component ---
+// ── Specialist DAG ─────────────────────────────────────────────────────────────
 
 const SPECIALISTS: Array<{
   key: keyof Specialists;
@@ -214,7 +246,7 @@ const SPECIALISTS: Array<{
   {
     key: 'ironjaw',
     name: 'IRONJAW',
-    character: 'Paranoid. Finds what\'s rotten in the hold.',
+    character: "Paranoid. Finds what's rotten in the hold.",
   },
   {
     key: 'barnacle',
@@ -263,7 +295,318 @@ function SpecialistDAG({ specialists }: { specialists: Specialists }) {
   );
 }
 
-// --- Main page ---
+// ── Mutineer Panel ─────────────────────────────────────────────────────────────
+
+function MutineerPanel({
+  status,
+  challenges,
+}: {
+  status: MutineerStatus;
+  challenges: MutineerChallenge[];
+}) {
+  const borderColor =
+    status === 'complete'
+      ? 'border-orange-500'
+      : status === 'running'
+        ? 'border-blue-500'
+        : status === 'failed'
+          ? 'border-red-500'
+          : 'border-gray-600';
+
+  return (
+    <div
+      className={`rounded-xl border-2 p-4 text-xs bg-gray-900 ${borderColor}`}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        {status === 'running' ? (
+          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+        ) : status === 'complete' ? (
+          <span className="h-2 w-2 rounded-full bg-orange-400" />
+        ) : status === 'failed' ? (
+          <span className="h-2 w-2 rounded-full bg-red-400" />
+        ) : (
+          <span className="h-2 w-2 rounded-full bg-gray-500" />
+        )}
+        <span className="font-bold text-gray-100 uppercase tracking-wide">
+          THE MUTINEER
+        </span>
+      </div>
+      <p className="text-gray-500 text-[10px] mb-2 italic">
+        Argues the opposite on principle.
+      </p>
+      {status === 'running' && (
+        <p className="text-blue-400 italic">Reviewing findings…</p>
+      )}
+      {status === 'complete' && (
+        <p className="text-orange-300">
+          Challenged {challenges.length} finding
+          {challenges.length !== 1 ? 's' : ''}
+        </p>
+      )}
+      {status === 'failed' && (
+        <p className="text-red-400 italic">Failed — no challenges filed</p>
+      )}
+    </div>
+  );
+}
+
+// ── Human Review Panel ─────────────────────────────────────────────────────────
+
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function HumanReviewPanel({
+  specialists,
+  windowOpen,
+  secondsRemaining,
+  onExtend,
+  onSubmit,
+  submitted,
+}: {
+  specialists: Specialists;
+  windowOpen: boolean;
+  secondsRemaining: number;
+  onExtend: () => void;
+  onSubmit: (challenges: Record<string, string>) => void;
+  submitted: boolean;
+}) {
+  const [challenges, setChallenges] = useState<Record<string, string>>({});
+  const [localSeconds, setLocalSeconds] = useState(secondsRemaining);
+
+  // Sync local countdown from SSE state
+  useEffect(() => {
+    setLocalSeconds(secondsRemaining);
+  }, [secondsRemaining]);
+
+  // Tick down locally for smooth display
+  useEffect(() => {
+    if (!windowOpen || submitted) return;
+    const interval = setInterval(() => {
+      setLocalSeconds((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [windowOpen, submitted]);
+
+  const allFindings: Array<{ specialist: string; finding: Finding }> = [];
+  for (const [name, s] of Object.entries(specialists)) {
+    if (s.findings) {
+      for (const f of s.findings) {
+        allFindings.push({ specialist: name, finding: f });
+      }
+    }
+  }
+
+  const isExpired = !windowOpen && !submitted;
+
+  return (
+    <div className="rounded-xl border-2 border-gray-700 bg-gray-900 p-4 text-xs space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="font-bold text-gray-100 uppercase tracking-wide">
+          Human Review Window
+        </span>
+        <span
+          className={`font-mono text-base font-bold ${
+            isExpired
+              ? 'text-gray-500'
+              : localSeconds < 60
+                ? 'text-red-400'
+                : 'text-gray-300'
+          }`}
+        >
+          {submitted
+            ? 'Submitted'
+            : isExpired
+              ? 'Expired'
+              : formatTime(localSeconds)}
+        </span>
+      </div>
+
+      {allFindings.length === 0 && (
+        <p className="text-gray-500 italic">No findings to challenge.</p>
+      )}
+
+      {allFindings.length > 0 && (
+        <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+          {allFindings.map(({ specialist, finding }) => (
+            <div
+              key={finding.id}
+              className="rounded-lg bg-gray-800 p-3 space-y-2"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1">
+                  <span
+                    className={`text-[10px] font-semibold uppercase ${
+                      finding.severity === 'critical'
+                        ? 'text-red-400'
+                        : finding.severity === 'major'
+                          ? 'text-orange-400'
+                          : 'text-yellow-400'
+                    }`}
+                  >
+                    {specialist.toUpperCase()} — {finding.severity}
+                  </span>
+                  <p className="text-gray-300 mt-0.5">{finding.description}</p>
+                </div>
+                <span className="text-gray-600 font-mono text-[9px] shrink-0">
+                  {finding.id}
+                </span>
+              </div>
+              <textarea
+                className="w-full rounded bg-gray-700 border border-gray-600 p-2 text-gray-200 placeholder-gray-500 focus:border-blue-500 focus:outline-none resize-none text-xs"
+                rows={2}
+                placeholder="Challenge this finding… (optional)"
+                value={challenges[finding.id] ?? ''}
+                onChange={(e) =>
+                  setChallenges((prev) => ({
+                    ...prev,
+                    [finding.id]: e.target.value,
+                  }))
+                }
+                disabled={!windowOpen || submitted}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {windowOpen && !submitted && (
+        <div className="flex gap-2 pt-1">
+          <button
+            onClick={onExtend}
+            className="rounded-lg border border-gray-600 px-3 py-1.5 text-gray-300 text-[11px] hover:border-blue-500 hover:text-blue-400 transition-colors"
+          >
+            Extend (+2 min)
+          </button>
+          <button
+            onClick={() => onSubmit(challenges)}
+            className="flex-1 rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white text-[11px] hover:bg-blue-500 transition-colors"
+          >
+            Submit Challenges
+          </button>
+        </div>
+      )}
+
+      {submitted && (
+        <p className="text-green-400 text-[11px]">Challenges submitted.</p>
+      )}
+      {isExpired && (
+        <p className="text-gray-500 text-[11px] italic">
+          Window expired — no challenges submitted.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Arbitration Panel ──────────────────────────────────────────────────────────
+
+function rulingBadge(ruling?: ArbitrationState['ruling']) {
+  if (!ruling) return null;
+  const colors: Record<string, string> = {
+    upheld: 'bg-red-900 text-red-300 border-red-700',
+    overturned: 'bg-green-900 text-green-300 border-green-700',
+    inconclusive: 'bg-gray-800 text-gray-400 border-gray-600',
+  };
+  return (
+    <span
+      className={`inline-block rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${colors[ruling] ?? colors['inconclusive']}`}
+    >
+      {ruling}
+    </span>
+  );
+}
+
+function ArbitrationPanel({
+  specialists,
+  arbitrations,
+}: {
+  specialists: Specialists;
+  arbitrations: ArbitrationState[];
+}) {
+  if (arbitrations.length === 0) return null;
+
+  const findFinding = (id: string): Finding | undefined => {
+    for (const s of Object.values(specialists)) {
+      const f = s.findings?.find((f: Finding) => f.id === id);
+      if (f) return f;
+    }
+    return undefined;
+  };
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-gray-500 uppercase tracking-widest">
+        Arbitration
+      </p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {arbitrations.map((arb) => {
+          const finding = findFinding(arb.findingId);
+          return (
+            <div
+              key={arb.findingId}
+              className={`rounded-xl border-2 p-3 text-xs bg-gray-900 ${
+                arb.status === 'running'
+                  ? 'border-blue-500'
+                  : arb.ruling === 'upheld'
+                    ? 'border-red-700'
+                    : arb.ruling === 'overturned'
+                      ? 'border-green-700'
+                      : 'border-gray-600'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1.5">
+                {arb.status === 'running' ? (
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+                ) : arb.ruling === 'upheld' ? (
+                  <span className="h-2 w-2 rounded-full bg-red-400" />
+                ) : arb.ruling === 'overturned' ? (
+                  <span className="h-2 w-2 rounded-full bg-green-400" />
+                ) : (
+                  <span className="h-2 w-2 rounded-full bg-gray-500" />
+                )}
+                <span className="font-bold text-gray-100 uppercase tracking-wide">
+                  Arbitrator
+                </span>
+                {rulingBadge(arb.ruling)}
+              </div>
+              {finding && (
+                <p className="text-gray-400 mb-1">
+                  <span className="font-mono text-gray-500 text-[9px]">
+                    [{arb.findingId}]
+                  </span>{' '}
+                  {finding.description}
+                </p>
+              )}
+              <div className="flex gap-1 mb-1.5 flex-wrap">
+                {arb.challengeSources.includes('mutineer') && (
+                  <span className="rounded border border-orange-700 bg-orange-900/30 px-1 py-0.5 text-[9px] text-orange-300">
+                    Mutineer
+                  </span>
+                )}
+                {arb.challengeSources.includes('human') && (
+                  <span className="rounded border border-blue-700 bg-blue-900/30 px-1 py-0.5 text-[9px] text-blue-300">
+                    Human
+                  </span>
+                )}
+              </div>
+              {arb.status === 'running' && (
+                <p className="text-blue-400 italic">Deliberating…</p>
+              )}
+              {arb.reasoning && (
+                <p className="text-gray-400 leading-relaxed">{arb.reasoning}</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function Home() {
   const [state, setState] = useState<AppState>({ type: 'floor-open' });
@@ -271,7 +614,15 @@ export default function Home() {
   const [context, setContext] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [challengesSubmitted, setChallengesSubmitted] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Reset submitted flag when a new review starts
+  useEffect(() => {
+    if (state.type === 'floor-open') {
+      setChallengesSubmitted(false);
+    }
+  }, [state.type]);
 
   useEffect(() => {
     const es = new EventSource('/api/review/stream');
@@ -298,10 +649,8 @@ export default function Home() {
 
   const handleSubmit = useCallback(async () => {
     if (!prUrl.trim() || submitting) return;
-
     setSubmitting(true);
     setError(null);
-
     try {
       const res = await fetch('/api/review/start', {
         method: 'POST',
@@ -311,9 +660,7 @@ export default function Home() {
           context: context.trim() || undefined,
         }),
       });
-
       const data = await res.json();
-
       if (!res.ok) {
         setError(data.error ?? 'Failed to start review');
       } else {
@@ -326,6 +673,31 @@ export default function Home() {
       setSubmitting(false);
     }
   }, [prUrl, context, submitting]);
+
+  const handleExtend = useCallback(async () => {
+    await fetch('/api/review/extend', { method: 'POST' });
+  }, []);
+
+  const handleSubmitChallenges = useCallback(
+    async (challenges: Record<string, string>) => {
+      const res = await fetch('/api/review/challenges', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(challenges),
+      });
+      if (res.ok) {
+        setChallengesSubmitted(true);
+      }
+    },
+    []
+  );
+
+  const showChallengePhase =
+    (state.type === 'running' || state.type === 'complete') &&
+    (state.windowOpen === true ||
+      challengesSubmitted ||
+      (state.mutineerStatus && state.mutineerStatus !== 'pending') ||
+      (state.arbitrations && state.arbitrations.length > 0));
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-8">
@@ -372,12 +744,13 @@ export default function Home() {
 
         {(state.type === 'running' || state.type === 'complete') && (
           <div
-            className={`space-y-4 rounded-xl border p-6 ${
+            className={`space-y-6 rounded-xl border p-6 ${
               state.type === 'complete'
                 ? 'border-green-800/50 bg-gray-900'
                 : 'border-blue-800/50 bg-gray-900'
             }`}
           >
+            {/* Header */}
             <div className="flex items-center gap-3">
               {state.type === 'running' ? (
                 <div className="h-3 w-3 animate-pulse rounded-full bg-blue-500" />
@@ -385,10 +758,13 @@ export default function Home() {
                 <div className="h-3 w-3 rounded-full bg-green-500" />
               )}
               <span className="font-medium">
-                {state.type === 'running' ? 'Review Running' : 'Review Complete'}
+                {state.type === 'running'
+                  ? 'Review Running'
+                  : 'Review Complete'}
               </span>
             </div>
 
+            {/* PR metadata */}
             {state.title ? (
               <div className="rounded-lg bg-gray-800 p-4">
                 <p className="text-sm text-gray-400">
@@ -405,12 +781,48 @@ export default function Home() {
               </div>
             )}
 
+            {/* Specialist DAG */}
             {state.specialists && (
               <>
                 <p className="text-xs text-gray-500 uppercase tracking-widest">
                   Specialist Crew
                 </p>
                 <SpecialistDAG specialists={state.specialists} />
+              </>
+            )}
+
+            {/* Challenge phase */}
+            {showChallengePhase && state.specialists && (
+              <>
+                <p className="text-xs text-gray-500 uppercase tracking-widest">
+                  Challenge Phase
+                </p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <MutineerPanel
+                    status={state.mutineerStatus ?? 'pending'}
+                    challenges={state.mutineerChallenges ?? []}
+                  />
+
+                  {(state.windowOpen === true ||
+                    challengesSubmitted ||
+                    state.secondsRemaining === 0) && (
+                    <HumanReviewPanel
+                      specialists={state.specialists}
+                      windowOpen={state.windowOpen ?? false}
+                      secondsRemaining={state.secondsRemaining ?? 0}
+                      onExtend={handleExtend}
+                      onSubmit={handleSubmitChallenges}
+                      submitted={challengesSubmitted}
+                    />
+                  )}
+                </div>
+
+                {state.arbitrations && state.arbitrations.length > 0 && (
+                  <ArbitrationPanel
+                    specialists={state.specialists}
+                    arbitrations={state.arbitrations}
+                  />
+                )}
               </>
             )}
 
