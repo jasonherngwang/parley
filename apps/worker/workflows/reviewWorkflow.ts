@@ -6,7 +6,7 @@ import type * as arbitratorActivities from '../activities/arbitrator';
 import type * as synthesisActivities from '../activities/synthesis';
 import type * as historyActivities from '../activities/history';
 import type { Finding, SpecialistResult } from '../activities/specialists';
-import type { MutineerResult, MutineerChallenge } from '../activities/mutineer';
+import type { MutineerChallenge } from '../activities/mutineer';
 import type { SynthesisVerdict } from '../activities/synthesis';
 
 const { fetchGitHubPRDiff } = wf.proxyActivities<typeof fetchActivities>({
@@ -151,11 +151,19 @@ function findFindingById(
 // 600 = single tick for 10-minute window → fewest workflow tasks → fastest tests.
 const WINDOW_TICK_S = 600;
 
+const TERMINAL: Set<string> = new Set(['complete', 'timed-out', 'failed']);
+
+// Continue-As-New threshold. History length > this triggers a new execution.
+const CAN_THRESHOLD = 10_000;
+
 export async function reviewWorkflow(args: {
   prUrl: string;
   context?: string;
+  // Populated when this execution was started by a Continue-As-New call.
+  _resumeState?: ReviewState;
 }): Promise<ReviewState> {
-  let state: ReviewState = {
+  // Initialize state from a prior execution (Continue-As-New) or fresh.
+  let state: ReviewState = args._resumeState ?? {
     status: 'running',
     prUrl: args.prUrl,
     context: args.context,
@@ -176,7 +184,6 @@ export async function reviewWorkflow(args: {
   wf.setHandler(getReviewState, () => state);
 
   // Register Signal + Update handlers early so they're never missed.
-  // Both are no-ops / errors while the window is not yet open.
 
   // Signal: extend window by 2 minutes (no-op if window not open)
   wf.setHandler(extendReviewWindow, () => {
@@ -186,11 +193,9 @@ export async function reviewWorkflow(args: {
   });
 
   // Update: submit human challenges.
-  // Accept at any point during the review (not only while windowOpen) so that
-  // time-skipping tests — where the 600s timer fires before the gRPC call lands —
-  // still record the challenges and include them in arbitration.
-  // Throwing in the handler body (not in a validator) causes workflow-task failures
-  // and retry loops, so we simply never throw here.
+  // Accept at any point during the review so that time-skipping tests — where
+  // the 600s timer fires before the gRPC call lands — still record the
+  // challenges and include them in arbitration.
   wf.setHandler(submitChallenges, (challenges) => {
     state = { ...state, humanChallenges: challenges };
     if (state.windowOpen) {
@@ -199,301 +204,356 @@ export async function reviewWorkflow(args: {
     return { accepted: true };
   });
 
-  // ── Step 1: Fetch PR diff ───────────────────────────────────────────────────
-  const prResult = await fetchGitHubPRDiff({
-    prUrl: args.prUrl,
-    context: args.context,
-  });
+  // If resuming a completed execution, return immediately.
+  if (state.status === 'complete') return state;
 
-  state = {
-    ...state,
-    title: prResult.title,
-    repoName: prResult.repoName,
-    prNumber: prResult.prNumber,
-    diff: prResult.diff,
-    specialists: {
-      ironjaw: { ...state.specialists.ironjaw, status: 'running' },
-      barnacle: { ...state.specialists.barnacle, status: 'running' },
-      greenhand: { ...state.specialists.greenhand, status: 'running' },
-    },
-  };
-
-  const specialistArgs = { diff: prResult.diff, context: args.context };
-
-  // ── Step 2: Run specialists in parallel (Join Gate 1) ──────────────────────
-  async function runWithTimeout(
-    name: 'ironjaw' | 'barnacle' | 'greenhand',
-    run: () => Promise<SpecialistResult>
-  ): Promise<void> {
-    try {
-      await wf.CancellationScope.withTimeout(45_000, async () => {
-        const result = await run();
-        state = {
-          ...state,
-          specialists: {
-            ...state.specialists,
-            [name]: {
-              status: 'complete',
-              attemptNumber: state.specialists[name].attemptNumber,
-              partialOutput: result.rawText,
-              findings: result.findings,
-            },
-          },
-        };
-      });
-    } catch (err) {
-      if (wf.isCancellation(err)) {
-        state = {
-          ...state,
-          specialists: {
-            ...state.specialists,
-            [name]: {
-              ...state.specialists[name],
-              status: 'timed-out',
-              findings: null,
-            },
-          },
-        };
-      } else {
-        state = {
-          ...state,
-          specialists: {
-            ...state.specialists,
-            [name]: {
-              ...state.specialists[name],
-              status: 'failed',
-              findings: null,
-            },
-          },
-        };
-      }
-    }
-  }
-
-  await Promise.all([
-    runWithTimeout('ironjaw', () => runIronjaw(specialistArgs)),
-    runWithTimeout('barnacle', () => runBarnacle(specialistArgs)),
-    runWithTimeout('greenhand', () => runGreenhand(specialistArgs)),
-  ]);
-
-  // ── Step 3: Open challenge window + run Mutineer in parallel (Join Gate 2) ─
-  state = {
-    ...state,
-    windowOpen: true,
-    secondsRemaining: 600,
-    mutineerStatus: 'running',
-  };
-
-  // Build allFindings for Mutineer
-  const allFindings: Record<string, Finding[]> = {
-    ironjaw: state.specialists.ironjaw.findings ?? [],
-    barnacle: state.specialists.barnacle.findings ?? [],
-    greenhand: state.specialists.greenhand.findings ?? [],
-  };
-
-  // Countdown function — resolves when window closes or timer expires
-  const runWindow = async (): Promise<void> => {
-    while (state.windowOpen && state.secondsRemaining > 0) {
-      const tick = Math.min(state.secondsRemaining, WINDOW_TICK_S);
-      const closed = await wf.condition(
-        () => !state.windowOpen,
-        tick * 1000
-      );
-      if (closed) break;
-      state = {
-        ...state,
-        secondsRemaining: Math.max(0, state.secondsRemaining - tick),
-      };
-    }
-    state = { ...state, windowOpen: false };
-  };
-
-  // Mutineer runs in parallel with the window
-  const mutineerPromise = runMutineer({
-    allFindings,
-    capPerSpecialist: 3,
-  })
-    .then((result: MutineerResult) => {
-      state = {
-        ...state,
-        mutineerStatus: 'complete',
-        mutineerChallenges: result.challenges,
-      };
-      return result;
-    })
-    .catch(() => {
-      state = { ...state, mutineerStatus: 'failed' };
-      return { challenges: [] } as MutineerResult;
+  // ── Step 1: Fetch PR diff (skip if already fetched) ────────────────────────
+  if (!state.diff) {
+    const prResult = await fetchGitHubPRDiff({
+      prUrl: args.prUrl,
+      context: args.context,
     });
-
-  // Join Gate 2: wait for both Mutineer and window to resolve
-  const [mutineerResult] = await Promise.all([
-    mutineerPromise,
-    runWindow(),
-  ]);
-
-  // ── Step 4: Fan-out arbitrators for all challenged findings ────────────────
-
-  // Merge mutineer challenges + human challenges per finding
-  type MergedChallenge = {
-    findingId: string;
-    finding: Finding;
-    mutineerChallenge?: string;
-    humanChallenge?: string;
-    sources: Array<'mutineer' | 'human'>;
-  };
-
-  const mergedMap = new Map<string, MergedChallenge>();
-
-  // From Mutineer
-  for (const c of mutineerResult.challenges) {
-    const finding = findFindingById(c.findingId, state.specialists);
-    if (!finding) continue;
-    if (!mergedMap.has(c.findingId)) {
-      mergedMap.set(c.findingId, {
-        findingId: c.findingId,
-        finding,
-        mutineerChallenge: c.challengeText,
-        sources: ['mutineer'],
-      });
-    } else {
-      const entry = mergedMap.get(c.findingId)!;
-      entry.mutineerChallenge = c.challengeText;
-      if (!entry.sources.includes('mutineer')) entry.sources.push('mutineer');
-    }
-  }
-
-  // From human
-  for (const [findingId, challengeText] of Object.entries(
-    state.humanChallenges
-  )) {
-    if (!challengeText.trim()) continue;
-    const finding = findFindingById(findingId, state.specialists);
-    if (!finding) continue;
-    if (!mergedMap.has(findingId)) {
-      mergedMap.set(findingId, {
-        findingId,
-        finding,
-        humanChallenge: challengeText,
-        sources: ['human'],
-      });
-    } else {
-      const entry = mergedMap.get(findingId)!;
-      entry.humanChallenge = challengeText;
-      if (!entry.sources.includes('human')) entry.sources.push('human');
-    }
-  }
-
-  // Initialise arbitration slots
-  const mergedChallenges = Array.from(mergedMap.values());
-  state = {
-    ...state,
-    arbitrations: mergedChallenges.map((c) => ({
-      findingId: c.findingId,
-      status: 'pending',
-      challengeSources: c.sources,
-    })),
-  };
-
-  // Dispatch one arbitrator per disputed finding, all in parallel
-  const arbitrationPromises = mergedChallenges.map(async (input) => {
-    const fid = input.findingId;
 
     state = {
       ...state,
-      arbitrations: state.arbitrations.map((a) =>
-        a.findingId === fid ? { ...a, status: 'running' } : a
-      ),
+      title: prResult.title,
+      repoName: prResult.repoName,
+      prNumber: prResult.prNumber,
+      diff: prResult.diff,
+      specialists: {
+        ironjaw: { ...state.specialists.ironjaw, status: 'running' },
+        barnacle: { ...state.specialists.barnacle, status: 'running' },
+        greenhand: { ...state.specialists.greenhand, status: 'running' },
+      },
     };
+  }
 
-    try {
-      const decision = await runArbitrator({
-        finding: input.finding,
-        mutineerChallenge: input.mutineerChallenge,
-        humanChallenge: input.humanChallenge,
-      });
+  const specialistArgs = { diff: state.diff!, context: args.context };
+
+  // ── Step 2: Run specialists in parallel (skip if all done) ─────────────────
+  const specialistsDone = () =>
+    (['ironjaw', 'barnacle', 'greenhand'] as const).every((n) =>
+      TERMINAL.has(state.specialists[n].status)
+    );
+
+  if (!specialistsDone()) {
+    async function runWithTimeout(
+      name: 'ironjaw' | 'barnacle' | 'greenhand',
+      run: () => Promise<SpecialistResult>
+    ): Promise<void> {
+      try {
+        await wf.CancellationScope.withTimeout(45_000, async () => {
+          const result = await run();
+          state = {
+            ...state,
+            specialists: {
+              ...state.specialists,
+              [name]: {
+                status: 'complete',
+                attemptNumber: state.specialists[name].attemptNumber,
+                partialOutput: result.rawText,
+                findings: result.findings,
+              },
+            },
+          };
+        });
+      } catch (err) {
+        if (wf.isCancellation(err)) {
+          state = {
+            ...state,
+            specialists: {
+              ...state.specialists,
+              [name]: {
+                ...state.specialists[name],
+                status: 'timed-out',
+                findings: null,
+              },
+            },
+          };
+        } else {
+          state = {
+            ...state,
+            specialists: {
+              ...state.specialists,
+              [name]: {
+                ...state.specialists[name],
+                status: 'failed',
+                findings: null,
+              },
+            },
+          };
+        }
+      }
+    }
+
+    // Only dispatch specialists that are still in a non-terminal state.
+    const tasks: Promise<void>[] = [];
+    if (!TERMINAL.has(state.specialists.ironjaw.status))
+      tasks.push(runWithTimeout('ironjaw', () => runIronjaw(specialistArgs)));
+    if (!TERMINAL.has(state.specialists.barnacle.status))
+      tasks.push(runWithTimeout('barnacle', () => runBarnacle(specialistArgs)));
+    if (!TERMINAL.has(state.specialists.greenhand.status))
+      tasks.push(
+        runWithTimeout('greenhand', () => runGreenhand(specialistArgs))
+      );
+
+    await Promise.all(tasks);
+  }
+
+  // ── Continue-As-New checkpoint 1 (post-specialists) ────────────────────────
+  if (wf.workflowInfo().historyLength > CAN_THRESHOLD) {
+    await wf.continueAsNew<typeof reviewWorkflow>({
+      prUrl: args.prUrl,
+      context: args.context,
+      _resumeState: state,
+    });
+  }
+
+  // ── Step 3: Challenge window + Mutineer in parallel (Join Gate 2) ──────────
+  const challengePhaseDone = () =>
+    !state.windowOpen && TERMINAL.has(state.mutineerStatus);
+
+  if (!challengePhaseDone()) {
+    // (Re-)initialize challenge window if it hasn't been opened yet.
+    if (state.mutineerStatus === 'pending') {
       state = {
         ...state,
-        arbitrations: state.arbitrations.map((a) =>
-          a.findingId === fid
-            ? {
-                ...a,
-                status: 'complete',
-                ruling: decision.ruling,
-                reasoning: decision.reasoning,
-              }
-            : a
-        ),
-      };
-    } catch {
-      state = {
-        ...state,
-        arbitrations: state.arbitrations.map((a) =>
-          a.findingId === fid
-            ? {
-                ...a,
-                status: 'complete',
-                ruling: 'inconclusive',
-                reasoning: 'Arbitrator unavailable',
-              }
-            : a
-        ),
+        windowOpen: true,
+        secondsRemaining: 600,
+        mutineerStatus: 'running',
       };
     }
-  });
 
-  await Promise.all(arbitrationPromises);
+    // Build allFindings for Mutineer
+    const allFindings: Record<string, Finding[]> = {
+      ironjaw: state.specialists.ironjaw.findings ?? [],
+      barnacle: state.specialists.barnacle.findings ?? [],
+      greenhand: state.specialists.greenhand.findings ?? [],
+    };
+
+    // Countdown — resolves when window closes or timer expires
+    const runWindow = async (): Promise<void> => {
+      while (state.windowOpen && state.secondsRemaining > 0) {
+        const tick = Math.min(state.secondsRemaining, WINDOW_TICK_S);
+        const closed = await wf.condition(
+          () => !state.windowOpen,
+          tick * 1000
+        );
+        if (closed) break;
+        state = {
+          ...state,
+          secondsRemaining: Math.max(0, state.secondsRemaining - tick),
+        };
+      }
+      state = { ...state, windowOpen: false };
+    };
+
+    // Only run Mutineer if it hasn't completed yet.
+    type MutineerPromise = Promise<void>;
+    let mutineerPromise: MutineerPromise;
+    if (TERMINAL.has(state.mutineerStatus)) {
+      mutineerPromise = Promise.resolve();
+    } else {
+      mutineerPromise = runMutineer({ allFindings, capPerSpecialist: 3 })
+        .then((result) => {
+          state = {
+            ...state,
+            mutineerStatus: 'complete',
+            mutineerChallenges: result.challenges,
+          };
+        })
+        .catch(() => {
+          state = { ...state, mutineerStatus: 'failed' };
+        });
+    }
+
+    await Promise.all([mutineerPromise, runWindow()]);
+  }
+
+  // ── Build arbitration slots (first-time or empty after resume) ─────────────
+  // Done here (before CAN checkpoint 2) so the resumed execution can directly
+  // dispatch pending arbitrators without rebuilding the merged map.
+  if (state.arbitrations.length === 0) {
+    const mergedMap = new Map<
+      string,
+      { findingId: string; sources: Array<'mutineer' | 'human'> }
+    >();
+
+    for (const c of state.mutineerChallenges) {
+      if (!findFindingById(c.findingId, state.specialists)) continue;
+      if (!mergedMap.has(c.findingId)) {
+        mergedMap.set(c.findingId, {
+          findingId: c.findingId,
+          sources: ['mutineer'],
+        });
+      } else {
+        const entry = mergedMap.get(c.findingId)!;
+        if (!entry.sources.includes('mutineer')) entry.sources.push('mutineer');
+      }
+    }
+
+    for (const [findingId, challengeText] of Object.entries(
+      state.humanChallenges
+    )) {
+      if (!challengeText.trim()) continue;
+      if (!findFindingById(findingId, state.specialists)) continue;
+      if (!mergedMap.has(findingId)) {
+        mergedMap.set(findingId, { findingId, sources: ['human'] });
+      } else {
+        const entry = mergedMap.get(findingId)!;
+        if (!entry.sources.includes('human')) entry.sources.push('human');
+      }
+    }
+
+    state = {
+      ...state,
+      arbitrations: Array.from(mergedMap.values()).map((c) => ({
+        findingId: c.findingId,
+        status: 'pending' as const,
+        challengeSources: c.sources,
+      })),
+    };
+  }
+
+  // ── Continue-As-New checkpoint 2 (post-challenge, slots initialized) ───────
+  if (wf.workflowInfo().historyLength > CAN_THRESHOLD) {
+    await wf.continueAsNew<typeof reviewWorkflow>({
+      prUrl: args.prUrl,
+      context: args.context,
+      _resumeState: state,
+    });
+  }
+
+  // ── Step 4: Fan-out arbitrators for all non-complete findings ───────────────
+  const pendingArbs = state.arbitrations.filter((a) => a.status !== 'complete');
+
+  if (pendingArbs.length > 0) {
+    const arbitrationPromises = pendingArbs.map(async (arb) => {
+      const fid = arb.findingId;
+      const finding = findFindingById(fid, state.specialists);
+      if (!finding) return;
+
+      const mutineerChallenge = state.mutineerChallenges.find(
+        (c) => c.findingId === fid
+      )?.challengeText;
+      const humanChallenge = state.humanChallenges[fid]?.trim()
+        ? state.humanChallenges[fid]
+        : undefined;
+
+      state = {
+        ...state,
+        arbitrations: state.arbitrations.map((a) =>
+          a.findingId === fid ? { ...a, status: 'running' as const } : a
+        ),
+      };
+
+      try {
+        const decision = await runArbitrator({
+          finding,
+          mutineerChallenge,
+          humanChallenge,
+        });
+        state = {
+          ...state,
+          arbitrations: state.arbitrations.map((a) =>
+            a.findingId === fid
+              ? {
+                  ...a,
+                  status: 'complete' as const,
+                  ruling: decision.ruling,
+                  reasoning: decision.reasoning,
+                }
+              : a
+          ),
+        };
+      } catch {
+        state = {
+          ...state,
+          arbitrations: state.arbitrations.map((a) =>
+            a.findingId === fid
+              ? {
+                  ...a,
+                  status: 'complete' as const,
+                  ruling: 'inconclusive' as const,
+                  reasoning: 'Arbitrator unavailable',
+                }
+              : a
+          ),
+        };
+      }
+    });
+
+    await Promise.all(arbitrationPromises);
+  }
+
+  // ── Continue-As-New checkpoint 3 (post-arbitration) ───────────────────────
+  if (wf.workflowInfo().historyLength > CAN_THRESHOLD) {
+    await wf.continueAsNew<typeof reviewWorkflow>({
+      prUrl: args.prUrl,
+      context: args.context,
+      _resumeState: state,
+    });
+  }
 
   // ── Step 5: Synthesis ──────────────────────────────────────────────────────
   // Ensure all signal/update handlers have finished before reading final state
   await wf.condition(wf.allHandlersFinished);
 
-  state = { ...state, synthesisStatus: 'running' };
+  if (state.synthesisStatus !== 'complete' && state.synthesisStatus !== 'failed') {
+    state = { ...state, synthesisStatus: 'running' };
 
-  const specialistOutputs: Record<string, Finding[] | null> = {
-    ironjaw: state.specialists.ironjaw.findings,
-    barnacle: state.specialists.barnacle.findings,
-    greenhand: state.specialists.greenhand.findings,
-  };
-
-  const arbitrationOutcomes = state.arbitrations
-    .filter((a) => a.ruling !== undefined)
-    .map((a) => ({
-      findingId: a.findingId,
-      challengeSources: a.challengeSources as string[],
-      ruling: a.ruling!,
-      reasoning: a.reasoning ?? '',
-    }));
-
-  try {
-    const verdictResult = await runSynthesis({
-      specialistOutputs,
-      arbitrationOutcomes,
-    });
-    state = {
-      ...state,
-      synthesisStatus: 'complete',
-      verdict: verdictResult,
+    const specialistOutputs: Record<string, Finding[] | null> = {
+      ironjaw: state.specialists.ironjaw.findings,
+      barnacle: state.specialists.barnacle.findings,
+      greenhand: state.specialists.greenhand.findings,
     };
-  } catch {
-    state = { ...state, synthesisStatus: 'failed' };
-  }
 
-  // ── Step 6: Write history record ──────────────────────────────────────────
-  const info = wf.workflowInfo();
-  try {
-    await writeHistoryRecord({
-      workflowId: info.workflowId,
-      prUrl: args.prUrl,
-      prTitle: state.title ?? '',
-      repoName: state.repoName ?? '',
-      startedAt: info.startTime.toISOString(),
-      specialistOutputs,
-      disputeOutcomes: arbitrationOutcomes,
-      verdict: state.verdict ?? { findings: [], summary: '' },
-    });
-  } catch {
-    // Non-fatal: history write failure should not prevent workflow completion
+    const arbitrationOutcomes = state.arbitrations
+      .filter((a) => a.ruling !== undefined)
+      .map((a) => ({
+        findingId: a.findingId,
+        challengeSources: a.challengeSources as string[],
+        ruling: a.ruling!,
+        reasoning: a.reasoning ?? '',
+      }));
+
+    try {
+      const verdictResult = await runSynthesis({
+        specialistOutputs,
+        arbitrationOutcomes,
+      });
+      state = {
+        ...state,
+        synthesisStatus: 'complete',
+        verdict: verdictResult,
+      };
+    } catch {
+      state = { ...state, synthesisStatus: 'failed' };
+    }
+
+    // ── Step 6: Write history record ────────────────────────────────────────
+    const info = wf.workflowInfo();
+    try {
+      await writeHistoryRecord({
+        workflowId: info.workflowId,
+        prUrl: args.prUrl,
+        prTitle: state.title ?? '',
+        repoName: state.repoName ?? '',
+        startedAt: info.startTime.toISOString(),
+        specialistOutputs,
+        disputeOutcomes: state.arbitrations
+          .filter((a) => a.ruling !== undefined)
+          .map((a) => ({
+            findingId: a.findingId,
+            challengeSources: a.challengeSources as string[],
+            ruling: a.ruling!,
+            reasoning: a.reasoning ?? '',
+          })),
+        verdict: state.verdict ?? { findings: [], summary: '' },
+      });
+    } catch {
+      // Non-fatal: history write failure should not prevent workflow completion
+    }
   }
 
   state = { ...state, status: 'complete' };

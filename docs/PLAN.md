@@ -37,7 +37,7 @@
 | 3 | Parallel specialist agents (streaming) | COMPLETE | — |
 | 4 | Parallel challenge phase (Mutineer + human window + arbitration) | COMPLETE | — |
 | 5 | Synthesis, verdict, and run history | COMPLETE | — |
-| 6 | Educational layer, pirate personas, Continue-As-New, polish | READY | — |
+| 6 | Educational layer, pirate personas, Continue-As-New, polish | COMPLETE | — |
 
 ---
 
@@ -389,7 +389,7 @@ apps/api/app/page.tsx                        # Verdict panel + history sidebar
 
 ## Issue #6 — Educational layer, pirate personas, Continue-As-New, polish
 
-**Status: BLOCKED by #5**
+**Status: COMPLETE**
 
 ### What to build
 

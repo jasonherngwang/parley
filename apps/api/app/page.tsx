@@ -111,12 +111,143 @@ type CompleteState = {
 };
 type AppState = FloorOpenState | RunningState | CompleteState;
 
+// ── Educational "Why" content ──────────────────────────────────────────────────
+
+interface WhyCopy {
+  title: string;
+  paragraphs: string[];
+}
+
+const WHY_COPY: Record<string, WhyCopy> = {
+  'specialist-ironjaw': {
+    title: 'IRONJAW — Security Auditor',
+    paragraphs: [
+      'IRONJAW is a Temporal Activity — a regular async function that can fail, be retried, and heartbeat progress back to the workflow.',
+      'Retry policy: up to 3 attempts, 2-second backoff that doubles each retry. Heartbeat timeout: 15 seconds. If no heartbeat arrives within that window, Temporal assumes the activity is stuck and re-schedules it on another worker.',
+      'Why the fast queue? Gemini Flash Lite is lightweight and fast — ideal for running three reviewers in parallel without burning through budget.',
+      'If this worker crashes right now, Temporal detects the missed heartbeat within 15 seconds and automatically re-dispatches the activity to another available worker. Your workflow state is safe.',
+    ],
+  },
+  'specialist-barnacle': {
+    title: 'BARNACLE — Complexity Skeptic',
+    paragraphs: [
+      'BARNACLE is a Temporal Activity running on the same fast task queue as IRONJAW and GREENHAND. All three start simultaneously the moment the PR diff is fetched.',
+      'Retry policy: up to 3 attempts, 2-second initial backoff with exponential increase. Heartbeat timeout: 15 seconds.',
+      'BARNACLE streams its ship\'s log back to the workflow via heartbeat metadata, which is forwarded to the UI as partial output in real time.',
+      'The finding schema enforces structured output: severity, description, line reference, and recommendation — extracted via a second LLM call after streaming completes.',
+    ],
+  },
+  'specialist-greenhand': {
+    title: 'GREENHAND — Domain Reviewer',
+    paragraphs: [
+      'GREENHAND is the third parallel specialist Activity, reading the diff from a junior\'s literal perspective.',
+      'All three specialists are dispatched with Promise.all — if one is rate-limited or slow, the other two proceed independently.',
+      'Each specialist is wrapped in a CancellationScope.withTimeout(45s). If the 45-second deadline passes, Temporal cancels the scope and marks the slot timed-out — the join gate still fires when the other two complete.',
+      'Finding IDs are prefixed by specialist: greenhand-1, greenhand-2, etc. This makes it easy to trace a finding through the arbitration and synthesis stages.',
+    ],
+  },
+  mutineer: {
+    title: 'THE MUTINEER — Dispute Orchestrator',
+    paragraphs: [
+      'THE MUTINEER runs in parallel with the human review window. It independently decides which findings to challenge — it doesn\'t fill in for the human, it has its own opinion.',
+      'Both THE MUTINEER and the human can challenge the same finding. The arbitrator receives all challenges for a finding and rules once — it sees whether the challenge came from Mutineer, human, or both.',
+      'This is also a Temporal Activity: same retry policy as the specialists, on the fast queue. The Mutineer streams its reasoning back via heartbeat, just like the specialists do.',
+    ],
+  },
+  signal: {
+    title: 'Signal — Extend Window',
+    paragraphs: [
+      'Fire-and-forget. No validation, no response. The workflow receives the Signal and adds 2 minutes to the countdown.',
+      'Durable: this event is recorded in Temporal\'s event history the instant it arrives — even before the workflow task has processed it.',
+      'Because Signals are asynchronous, there is no way to reject one from the caller\'s side. Any validation must happen inside the workflow handler after the fact.',
+      'The Signal handler is registered before any await in the workflow, so it can never be missed — even if the Signal arrives while the workflow is processing something else.',
+    ],
+  },
+  update: {
+    title: 'Update — Submit Challenges',
+    paragraphs: [
+      'Synchronous and acknowledged. Unlike a Signal, an Update waits for the workflow to accept or reject the request before returning to the caller.',
+      'The workflow processed your challenge map and stored it in state. You received { accepted: true } because the Update handler completed successfully.',
+      'If the workflow had rejected the Update (for example, because the window was already closed), you would have received an error response instead.',
+      'Updates are recorded in Temporal\'s event history just like Signals — fully durable and replayable during workflow reconstruction.',
+    ],
+  },
+  arbitrator: {
+    title: 'Arbitrator — Dynamic Dispatch',
+    paragraphs: [
+      'One Arbitrator Activity is dispatched per disputed finding. The exact count is not known until both THE MUTINEER and the human review window have closed.',
+      'All arbitrators run in parallel — a finding challenged by both Mutineer and human resolves at the same time as one challenged only by the Mutineer.',
+      'Gemini Flash Lite is sufficient here: the ruling is bounded (upheld / overturned / inconclusive) and the arbitrator weighs at most two short challenge arguments against the original finding.',
+      'If all retry attempts are exhausted, the ruling falls back to "inconclusive" — the workflow continues regardless. A single arbitrator failure never blocks the review.',
+    ],
+  },
+  synthesis: {
+    title: 'Synthesis — Final Verdict',
+    paragraphs: [
+      'Synthesis reads every specialist finding and every arbitration outcome, then reconciles them into a single structured verdict.',
+      'This is the only activity on the review-deep task queue. It uses Gemini Pro — the heavier model is warranted for the holistic reconciliation step where all evidence must be weighed together.',
+      'Synthesis streams its reasoning back via heartbeat, then produces a structured verdict with per-finding severity, ruling, challenge sources, and recommendation.',
+      'The workflow waits for all signal/update handlers to finish before calling Synthesis — ensuring the final state snapshot is complete before the verdict is generated.',
+    ],
+  },
+};
+
+// ── WhyDrawer ──────────────────────────────────────────────────────────────────
+
+function WhyDrawer({
+  whyKey,
+  onClose,
+}: {
+  whyKey: string;
+  onClose: () => void;
+}) {
+  const content = WHY_COPY[whyKey];
+  if (!content) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div
+        className="absolute inset-0 bg-black/50"
+        onClick={onClose}
+      />
+      <div className="animate-slide-in-right relative w-full max-w-md h-full bg-gray-950 border-l border-gray-700 p-6 overflow-y-auto shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between mb-6">
+          <span className="text-xs text-gray-500 uppercase tracking-widest font-semibold">
+            Why this?
+          </span>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-300 transition-colors text-lg leading-none"
+            aria-label="Close drawer"
+          >
+            ✕
+          </button>
+        </div>
+        <h2 className="text-base font-bold text-gray-100 mb-5">{content.title}</h2>
+        <div className="space-y-4 flex-1">
+          {content.paragraphs.map((p, i) => (
+            <p key={i} className="text-sm text-gray-400 leading-relaxed">
+              {p}
+            </p>
+          ))}
+        </div>
+        <div className="mt-6 pt-4 border-t border-gray-800">
+          <p className="text-[10px] text-gray-600 italic">
+            Powered by Temporal — durable workflow orchestration
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Specialist Node ────────────────────────────────────────────────────────────
 
 interface SpecialistNodeData {
   name: string;
   character: string;
   state: SpecialistState;
+  whyKey: string;
   [key: string]: unknown;
 }
 
@@ -138,17 +269,17 @@ function statusColor(status: SpecialistStatus): string {
 function statusDot(status: SpecialistStatus) {
   switch (status) {
     case 'pending':
-      return <span className="h-2 w-2 rounded-full bg-gray-500" />;
+      return <span className="h-2 w-2 rounded-full bg-gray-500 shrink-0" />;
     case 'running':
       return (
-        <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+        <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400 shrink-0" />
       );
     case 'complete':
-      return <span className="h-2 w-2 rounded-full bg-green-400" />;
+      return <span className="h-2 w-2 rounded-full bg-green-400 shrink-0" />;
     case 'timed-out':
-      return <span className="h-2 w-2 rounded-full bg-yellow-400" />;
+      return <span className="h-2 w-2 rounded-full bg-yellow-400 shrink-0" />;
     case 'failed':
-      return <span className="h-2 w-2 rounded-full bg-red-400" />;
+      return <span className="h-2 w-2 rounded-full bg-red-400 shrink-0" />;
   }
 }
 
@@ -165,7 +296,8 @@ function SpecialistNode({ data }: { data: SpecialistNodeData }) {
 
   return (
     <div
-      className={`w-56 rounded-xl border-2 p-3 text-xs shadow-lg ${statusColor(state.status)}`}
+      className={`w-56 rounded-xl border-2 p-3 text-xs shadow-lg cursor-pointer hover:ring-2 hover:ring-blue-500/30 transition-all duration-300 ${statusColor(state.status)}`}
+      title="Click to learn about this Temporal primitive"
     >
       <Handle type="target" position={Position.Top} className="opacity-0" />
       <div className="flex items-center gap-2 mb-1">
@@ -186,6 +318,11 @@ function SpecialistNode({ data }: { data: SpecialistNodeData }) {
           <span className="line-clamp-4">{state.partialOutput}</span>
           <span className="animate-pulse">▋</span>
         </div>
+      )}
+      {state.status === 'running' && !state.partialOutput && (
+        <p className="text-blue-400 italic">
+          Running<span className="animate-pulse">…</span>
+        </p>
       )}
 
       {state.status === 'complete' && state.findings && (
@@ -273,7 +410,7 @@ const SPECIALISTS: Array<{
   {
     key: 'barnacle',
     name: 'BARNACLE',
-    character: 'Greybeard. Has seen this pattern sink ships before.',
+    character: '20-year greybeard. Has seen this pattern sink ships before.',
   },
   {
     key: 'greenhand',
@@ -282,7 +419,13 @@ const SPECIALISTS: Array<{
   },
 ];
 
-function SpecialistDAG({ specialists }: { specialists: Specialists }) {
+function SpecialistDAG({
+  specialists,
+  onWhyClick,
+}: {
+  specialists: Specialists;
+  onWhyClick: (key: string) => void;
+}) {
   const nodes: Node[] = SPECIALISTS.map((s, i) => ({
     id: s.key,
     type: 'specialist',
@@ -291,10 +434,19 @@ function SpecialistDAG({ specialists }: { specialists: Specialists }) {
       name: s.name,
       character: s.character,
       state: specialists[s.key],
+      whyKey: `specialist-${s.key}`,
     },
   }));
 
   const edges: Edge[] = [];
+
+  const handleNodeClick = useCallback(
+    (_: React.MouseEvent, node: Node) => {
+      const whyKey = (node.data as { whyKey: string }).whyKey;
+      onWhyClick(whyKey);
+    },
+    [onWhyClick]
+  );
 
   return (
     <div className="h-72 w-full rounded-xl border border-gray-800 overflow-hidden">
@@ -310,10 +462,26 @@ function SpecialistDAG({ specialists }: { specialists: Specialists }) {
         elementsSelectable={false}
         panOnDrag={false}
         zoomOnScroll={false}
+        onNodeClick={handleNodeClick}
       >
         <Background color="#374151" gap={16} />
       </ReactFlow>
     </div>
+  );
+}
+
+// ── Why button ─────────────────────────────────────────────────────────────────
+
+function WhyBtn({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="shrink-0 h-4 w-4 rounded-full border border-gray-600 text-gray-500 text-[9px] font-bold hover:border-blue-500 hover:text-blue-400 transition-colors leading-none flex items-center justify-center"
+      title="Why this Temporal primitive?"
+      aria-label="Why?"
+    >
+      ?
+    </button>
   );
 }
 
@@ -322,9 +490,11 @@ function SpecialistDAG({ specialists }: { specialists: Specialists }) {
 function MutineerPanel({
   status,
   challenges,
+  onWhyClick,
 }: {
   status: MutineerStatus;
   challenges: MutineerChallenge[];
+  onWhyClick: () => void;
 }) {
   const borderColor =
     status === 'complete'
@@ -337,27 +507,30 @@ function MutineerPanel({
 
   return (
     <div
-      className={`rounded-xl border-2 p-4 text-xs bg-gray-900 ${borderColor}`}
+      className={`rounded-xl border-2 p-4 text-xs bg-gray-900 transition-all duration-300 ${borderColor}`}
     >
       <div className="flex items-center gap-2 mb-1">
         {status === 'running' ? (
-          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400 shrink-0" />
         ) : status === 'complete' ? (
-          <span className="h-2 w-2 rounded-full bg-orange-400" />
+          <span className="h-2 w-2 rounded-full bg-orange-400 shrink-0" />
         ) : status === 'failed' ? (
-          <span className="h-2 w-2 rounded-full bg-red-400" />
+          <span className="h-2 w-2 rounded-full bg-red-400 shrink-0" />
         ) : (
-          <span className="h-2 w-2 rounded-full bg-gray-500" />
+          <span className="h-2 w-2 rounded-full bg-gray-500 shrink-0" />
         )}
         <span className="font-bold text-gray-100 uppercase tracking-wide">
           THE MUTINEER
         </span>
+        <WhyBtn onClick={onWhyClick} />
       </div>
       <p className="text-gray-500 text-[10px] mb-2 italic">
-        Argues the opposite on principle.
+        Argues the opposite on principle. Decides independently which findings deserve a fight.
       </p>
       {status === 'running' && (
-        <p className="text-blue-400 italic">Reviewing findings…</p>
+        <p className="text-blue-400 italic">
+          Reviewing findings<span className="animate-pulse">…</span>
+        </p>
       )}
       {status === 'complete' && (
         <p className="text-orange-300">
@@ -387,6 +560,8 @@ function HumanReviewPanel({
   onExtend,
   onSubmit,
   submitted,
+  onSignalWhy,
+  onUpdateWhy,
 }: {
   specialists: Specialists;
   windowOpen: boolean;
@@ -394,6 +569,8 @@ function HumanReviewPanel({
   onExtend: () => void;
   onSubmit: (challenges: Record<string, string>) => void;
   submitted: boolean;
+  onSignalWhy: () => void;
+  onUpdateWhy: () => void;
 }) {
   const [challenges, setChallenges] = useState<Record<string, string>>({});
   const [localSeconds, setLocalSeconds] = useState(secondsRemaining);
@@ -430,7 +607,7 @@ function HumanReviewPanel({
           Human Review Window
         </span>
         <span
-          className={`font-mono text-base font-bold ${
+          className={`font-mono text-base font-bold transition-colors duration-300 ${
             isExpired
               ? 'text-gray-500'
               : localSeconds < 60
@@ -495,19 +672,25 @@ function HumanReviewPanel({
       )}
 
       {windowOpen && !submitted && (
-        <div className="flex gap-2 pt-1">
-          <button
-            onClick={onExtend}
-            className="rounded-lg border border-gray-600 px-3 py-1.5 text-gray-300 text-[11px] hover:border-blue-500 hover:text-blue-400 transition-colors"
-          >
-            Extend (+2 min)
-          </button>
-          <button
-            onClick={() => onSubmit(challenges)}
-            className="flex-1 rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white text-[11px] hover:bg-blue-500 transition-colors"
-          >
-            Submit Challenges
-          </button>
+        <div className="flex gap-2 pt-1 flex-wrap">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onExtend}
+              className="rounded-lg border border-gray-600 px-3 py-1.5 text-gray-300 text-[11px] hover:border-blue-500 hover:text-blue-400 transition-colors"
+            >
+              Extend (+2 min)
+            </button>
+            <WhyBtn onClick={onSignalWhy} />
+          </div>
+          <div className="flex items-center gap-1 flex-1">
+            <button
+              onClick={() => onSubmit(challenges)}
+              className="flex-1 rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white text-[11px] hover:bg-blue-500 transition-colors"
+            >
+              Submit Challenges
+            </button>
+            <WhyBtn onClick={onUpdateWhy} />
+          </div>
         </div>
       )}
 
@@ -541,12 +724,24 @@ function rulingBadge(ruling?: ArbitrationState['ruling']) {
   );
 }
 
+function specialistFromFindingId(id: string): string {
+  const prefix = id.split('-')[0];
+  const map: Record<string, string> = {
+    ironjaw: 'IRONJAW',
+    barnacle: 'BARNACLE',
+    greenhand: 'GREENHAND',
+  };
+  return map[prefix] ?? prefix.toUpperCase();
+}
+
 function ArbitrationPanel({
   specialists,
   arbitrations,
+  onWhyClick,
 }: {
   specialists: Specialists;
   arbitrations: ArbitrationState[];
+  onWhyClick: () => void;
 }) {
   if (arbitrations.length === 0) return null;
 
@@ -560,16 +755,20 @@ function ArbitrationPanel({
 
   return (
     <div className="space-y-2">
-      <p className="text-xs text-gray-500 uppercase tracking-widest">
-        Arbitration
-      </p>
+      <div className="flex items-center gap-2">
+        <p className="text-xs text-gray-500 uppercase tracking-widest">
+          Arbitration
+        </p>
+        <WhyBtn onClick={onWhyClick} />
+      </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {arbitrations.map((arb) => {
           const finding = findFinding(arb.findingId);
+          const specialistName = specialistFromFindingId(arb.findingId);
           return (
             <div
               key={arb.findingId}
-              className={`rounded-xl border-2 p-3 text-xs bg-gray-900 ${
+              className={`animate-fade-in-up rounded-xl border-2 p-3 text-xs bg-gray-900 transition-all duration-300 ${
                 arb.status === 'running'
                   ? 'border-blue-500'
                   : arb.ruling === 'upheld'
@@ -579,18 +778,21 @@ function ArbitrationPanel({
                       : 'border-gray-600'
               }`}
             >
-              <div className="flex items-center gap-2 mb-1.5">
+              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                 {arb.status === 'running' ? (
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400 shrink-0" />
                 ) : arb.ruling === 'upheld' ? (
-                  <span className="h-2 w-2 rounded-full bg-red-400" />
+                  <span className="h-2 w-2 rounded-full bg-red-400 shrink-0" />
                 ) : arb.ruling === 'overturned' ? (
-                  <span className="h-2 w-2 rounded-full bg-green-400" />
+                  <span className="h-2 w-2 rounded-full bg-green-400 shrink-0" />
                 ) : (
-                  <span className="h-2 w-2 rounded-full bg-gray-500" />
+                  <span className="h-2 w-2 rounded-full bg-gray-500 shrink-0" />
                 )}
-                <span className="font-bold text-gray-100 uppercase tracking-wide">
+                <span className="font-bold text-gray-100 uppercase tracking-wide text-[10px]">
                   Arbitrator
+                </span>
+                <span className="text-gray-500 text-[9px]">
+                  {specialistName}&apos;s finding
                 </span>
                 {rulingBadge(arb.ruling)}
               </div>
@@ -605,7 +807,7 @@ function ArbitrationPanel({
               <div className="flex gap-1 mb-1.5 flex-wrap">
                 {arb.challengeSources.includes('mutineer') && (
                   <span className="rounded border border-orange-700 bg-orange-900/30 px-1 py-0.5 text-[9px] text-orange-300">
-                    Mutineer
+                    THE MUTINEER
                   </span>
                 )}
                 {arb.challengeSources.includes('human') && (
@@ -615,7 +817,9 @@ function ArbitrationPanel({
                 )}
               </div>
               {arb.status === 'running' && (
-                <p className="text-blue-400 italic">Deliberating…</p>
+                <p className="text-blue-400 italic">
+                  Deliberating<span className="animate-pulse">…</span>
+                </p>
               )}
               {arb.reasoning && (
                 <p className="text-gray-400 leading-relaxed">{arb.reasoning}</p>
@@ -651,10 +855,12 @@ function SynthesisPanel({
   status,
   partialOutput,
   verdict,
+  onWhyClick,
 }: {
   status: SynthesisStatus;
   partialOutput?: string;
   verdict?: SynthesisVerdict;
+  onWhyClick: () => void;
 }) {
   const borderColor =
     status === 'complete'
@@ -678,26 +884,33 @@ function SynthesisPanel({
       <p className="text-xs text-gray-500 uppercase tracking-widest">
         Synthesis
       </p>
-      <div className={`rounded-xl border-2 p-4 text-xs bg-gray-900 ${borderColor}`}>
-        <div className="flex items-center gap-2 mb-2">
+      <div
+        className={`rounded-xl border-2 p-4 text-xs bg-gray-900 transition-all duration-300 ${borderColor}`}
+      >
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
           {status === 'running' ? (
-            <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+            <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400 shrink-0" />
           ) : status === 'complete' ? (
-            <span className="h-2 w-2 rounded-full bg-purple-400" />
+            <span className="h-2 w-2 rounded-full bg-purple-400 shrink-0" />
           ) : status === 'failed' ? (
-            <span className="h-2 w-2 rounded-full bg-red-400" />
+            <span className="h-2 w-2 rounded-full bg-red-400 shrink-0" />
           ) : (
-            <span className="h-2 w-2 rounded-full bg-gray-500" />
+            <span className="h-2 w-2 rounded-full bg-gray-500 shrink-0" />
           )}
           <span className="font-bold text-gray-100 uppercase tracking-wide">
             Synthesis
           </span>
+          <WhyBtn onClick={onWhyClick} />
           {status === 'complete' && verdict && (
             <span className="ml-auto text-purple-400 text-[10px]">
-              {verdict.findings.length} finding{verdict.findings.length !== 1 ? 's' : ''}
+              {verdict.findings.length} finding
+              {verdict.findings.length !== 1 ? 's' : ''}
             </span>
           )}
         </div>
+        <p className="text-gray-500 text-[10px] italic mb-2">
+          Reads all findings and all arbitration rulings. Reconciles everything into a structured verdict.
+        </p>
 
         {status === 'running' && partialOutput && (
           <div className="rounded bg-gray-800 p-2 max-h-32 overflow-hidden text-gray-300 leading-relaxed mb-2">
@@ -706,7 +919,9 @@ function SynthesisPanel({
           </div>
         )}
         {status === 'running' && !partialOutput && (
-          <p className="text-blue-400 italic">Reconciling all findings…</p>
+          <p className="text-blue-400 italic">
+            Reconciling all findings<span className="animate-pulse">…</span>
+          </p>
         )}
         {status === 'failed' && (
           <p className="text-red-400 italic">Synthesis failed.</p>
@@ -763,15 +978,15 @@ function VerdictFindingList({ findings }: { findings: VerdictFinding[] }) {
       {findings.map((f, i) => (
         <li key={i} className="rounded-lg bg-gray-800 p-3 space-y-1.5">
           <div className="flex items-start gap-2 flex-wrap">
-            <span className="text-gray-500 text-[9px] font-mono uppercase">
-              {f.specialist}
+            <span className="text-gray-400 text-[9px] font-mono uppercase font-semibold">
+              {f.specialist.toUpperCase()}
             </span>
             {verdictRulingBadge(f.ruling)}
             {f.challengeSources && f.challengeSources.length > 0 && (
               <div className="flex gap-1">
                 {f.challengeSources.includes('mutineer') && (
                   <span className="rounded border border-orange-700 bg-orange-900/30 px-1 py-0.5 text-[9px] text-orange-300">
-                    Mutineer
+                    THE MUTINEER
                   </span>
                 )}
                 {f.challengeSources.includes('human') && (
@@ -860,7 +1075,8 @@ function HistoryModal({
                       {item.repoName}
                     </span>
                     <span className="text-purple-400 text-[10px]">
-                      {item.findingCount} finding{item.findingCount !== 1 ? 's' : ''}
+                      {item.findingCount} finding
+                      {item.findingCount !== 1 ? 's' : ''}
                     </span>
                     <span className="text-gray-600 text-[10px] ml-auto">
                       {new Date(item.completedAt).toLocaleDateString()}
@@ -974,6 +1190,39 @@ function PastReviewPanel({
   );
 }
 
+// ── Event Log ──────────────────────────────────────────────────────────────────
+
+function EventLog({ entries }: { entries: string[] }) {
+  const logRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when new entries appear
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [entries]);
+
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-gray-500 uppercase tracking-widest">
+        Event Stream
+      </p>
+      <div
+        ref={logRef}
+        className="rounded-lg border border-gray-800 bg-gray-950 p-3 max-h-36 overflow-y-auto space-y-0.5"
+      >
+        {entries.map((entry, i) => (
+          <p key={i} className="text-[11px] text-gray-400 font-mono">
+            {entry}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -985,6 +1234,9 @@ export default function Home() {
   const [challengesSubmitted, setChallengesSubmitted] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [pastReview, setPastReview] = useState<PastReview | null>(null);
+  const [selectedWhy, setSelectedWhy] = useState<string | null>(null);
+  const [eventLog, setEventLog] = useState<string[]>([]);
+  const prevStateRef = useRef<AppState>({ type: 'floor-open' });
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Reset submitted flag when a new review starts
@@ -992,8 +1244,148 @@ export default function Home() {
     if (state.type === 'floor-open') {
       setChallengesSubmitted(false);
       setPastReview(null);
+      setEventLog([]);
     }
   }, [state.type]);
+
+  // Track state transitions → semantic event log entries
+  useEffect(() => {
+    const prev = prevStateRef.current;
+    const curr = state;
+    const newEntries: string[] = [];
+
+    // Review started
+    if (prev.type === 'floor-open' && curr.type === 'running') {
+      newEntries.push('🚀 Review started — fetching PR diff');
+    }
+
+    // PR fetched
+    if (
+      curr.type === 'running' &&
+      curr.title &&
+      !('title' in prev && prev.title)
+    ) {
+      newEntries.push(
+        `🔍 PR fetched: "${curr.title}" (${curr.repoName} #${curr.prNumber})`
+      );
+      newEntries.push('🚢 Crew dispatched — IRONJAW, BARNACLE, GREENHAND running');
+    }
+
+    // Specialist completions
+    if (curr.type === 'running' && curr.specialists) {
+      const prevSpec =
+        'specialists' in prev ? (prev as RunningState).specialists : undefined;
+      for (const [name, sp] of Object.entries(curr.specialists) as Array<
+        [string, SpecialistState]
+      >) {
+        const prevSp = prevSpec?.[name as keyof Specialists];
+        if (prevSp?.status !== 'complete' && sp.status === 'complete') {
+          const count = sp.findings?.length ?? 0;
+          newEntries.push(
+            `✅ ${name.toUpperCase()}: ${count} finding${count !== 1 ? 's' : ''} filed`
+          );
+        }
+        if (prevSp?.status !== 'timed-out' && sp.status === 'timed-out') {
+          newEntries.push(`⏱ ${name.toUpperCase()}: timed out after 45s`);
+        }
+        if (prevSp?.status !== 'failed' && sp.status === 'failed') {
+          newEntries.push(`💥 ${name.toUpperCase()}: failed after 3 attempts`);
+        }
+      }
+    }
+
+    // Challenge window opened
+    const prevWindowOpen =
+      'windowOpen' in prev ? (prev as RunningState).windowOpen : false;
+    const currWindowOpen =
+      'windowOpen' in curr ? (curr as RunningState).windowOpen : false;
+    if (!prevWindowOpen && currWindowOpen) {
+      newEntries.push('⚔️ Challenge window open — 10 minutes');
+      newEntries.push('🏴\u200d☠️ THE MUTINEER reviewing findings independently');
+    }
+
+    // Mutineer complete
+    const prevMutineer =
+      'mutineerStatus' in prev
+        ? (prev as RunningState).mutineerStatus
+        : undefined;
+    const currMutineer =
+      'mutineerStatus' in curr
+        ? (curr as RunningState).mutineerStatus
+        : undefined;
+    if (prevMutineer !== 'complete' && currMutineer === 'complete') {
+      const count = (curr as RunningState).mutineerChallenges?.length ?? 0;
+      newEntries.push(
+        `🏴\u200d☠️ THE MUTINEER challenged ${count} finding${count !== 1 ? 's' : ''}`
+      );
+    }
+
+    // Arbitrations resolved
+    const prevArbs =
+      'arbitrations' in prev
+        ? ((prev as RunningState).arbitrations ?? [])
+        : [];
+    const currArbs =
+      'arbitrations' in curr
+        ? ((curr as RunningState).arbitrations ?? [])
+        : [];
+    for (const arb of currArbs) {
+      const prevArb = prevArbs.find((a) => a.findingId === arb.findingId);
+      if (prevArb?.status !== 'complete' && arb.status === 'complete' && arb.ruling) {
+        const specialist = specialistFromFindingId(arb.findingId);
+        const rulingLabel =
+          arb.ruling === 'upheld'
+            ? '🔴 upheld'
+            : arb.ruling === 'overturned'
+              ? '🟢 overturned'
+              : '⚪ inconclusive';
+        newEntries.push(`⚖️ ${specialist}'s finding: ${rulingLabel}`);
+      }
+      // New arbitration slot appeared
+      if (!prevArb && arb.status !== 'complete') {
+        const specialist = specialistFromFindingId(arb.findingId);
+        const sources = arb.challengeSources
+          .map((s) => (s === 'mutineer' ? 'THE MUTINEER' : 'Human'))
+          .join(' + ');
+        newEntries.push(
+          `⚖️ Arbitrating ${specialist}'s finding — challenged by ${sources}`
+        );
+      }
+    }
+
+    // Synthesis started
+    const prevSynth =
+      'synthesisStatus' in prev
+        ? (prev as RunningState).synthesisStatus
+        : undefined;
+    const currSynth =
+      'synthesisStatus' in curr
+        ? (curr as RunningState).synthesisStatus
+        : undefined;
+    if (prevSynth !== 'running' && currSynth === 'running') {
+      newEntries.push('🔮 Synthesis running — reconciling all findings');
+    }
+    if (prevSynth !== 'complete' && currSynth === 'complete') {
+      const count = (curr as RunningState).verdict?.findings.length ?? 0;
+      newEntries.push(
+        `✅ Synthesis complete — ${count} finding${count !== 1 ? 's' : ''} in verdict`
+      );
+    }
+    if (prevSynth !== 'failed' && currSynth === 'failed') {
+      newEntries.push('💥 Synthesis failed');
+    }
+
+    // Review complete
+    if (prev.type !== 'complete' && curr.type === 'complete') {
+      newEntries.push('🎉 Review complete — floor reopening');
+    }
+
+    if (newEntries.length > 0) {
+      setEventLog((prev) => [...prev, ...newEntries]);
+    }
+
+    prevStateRef.current = curr;
+  }, [state]);
 
   useEffect(() => {
     const es = new EventSource('/api/review/stream');
@@ -1047,6 +1439,7 @@ export default function Home() {
 
   const handleExtend = useCallback(async () => {
     await fetch('/api/review/extend', { method: 'POST' });
+    setEventLog((prev) => [...prev, '⚡ Window extended (+2 min)']);
   }, []);
 
   const handleSubmitChallenges = useCallback(
@@ -1058,6 +1451,7 @@ export default function Home() {
       });
       if (res.ok) {
         setChallengesSubmitted(true);
+        setEventLog((prev) => [...prev, '📝 Challenges submitted']);
       }
     },
     []
@@ -1086,6 +1480,10 @@ export default function Home() {
     []
   );
 
+  const handleWhyClick = useCallback((key: string) => {
+    setSelectedWhy(key);
+  }, []);
+
   const showChallengePhase =
     (state.type === 'running' || state.type === 'complete') &&
     (state.windowOpen === true ||
@@ -1098,12 +1496,23 @@ export default function Home() {
     state.synthesisStatus &&
     state.synthesisStatus !== 'pending';
 
+  const showEventLog =
+    (state.type === 'running' || state.type === 'complete') &&
+    eventLog.length > 0;
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-8">
       {showHistory && (
         <HistoryModal
           onClose={() => setShowHistory(false)}
           onSelect={handleSelectHistory}
+        />
+      )}
+
+      {selectedWhy && (
+        <WhyDrawer
+          whyKey={selectedWhy}
+          onClose={() => setSelectedWhy(null)}
         />
       )}
 
@@ -1206,7 +1615,7 @@ export default function Home() {
               </div>
             ) : (
               <div className="rounded-lg bg-gray-800 p-4">
-                <p className="text-sm text-gray-400">Fetching PR details...</p>
+                <p className="text-sm text-gray-400">Fetching PR details<span className="animate-pulse">…</span></p>
                 <p className="mt-1 break-all text-xs text-gray-500">
                   {state.prUrl}
                 </p>
@@ -1218,8 +1627,14 @@ export default function Home() {
               <>
                 <p className="text-xs text-gray-500 uppercase tracking-widest">
                   Specialist Crew
+                  <span className="ml-2 text-gray-600 normal-case tracking-normal font-normal">
+                    (click any node to learn more)
+                  </span>
                 </p>
-                <SpecialistDAG specialists={state.specialists} />
+                <SpecialistDAG
+                  specialists={state.specialists}
+                  onWhyClick={handleWhyClick}
+                />
               </>
             )}
 
@@ -1233,6 +1648,7 @@ export default function Home() {
                   <MutineerPanel
                     status={state.mutineerStatus ?? 'pending'}
                     challenges={state.mutineerChallenges ?? []}
+                    onWhyClick={() => handleWhyClick('mutineer')}
                   />
 
                   {(state.windowOpen === true ||
@@ -1245,6 +1661,8 @@ export default function Home() {
                       onExtend={handleExtend}
                       onSubmit={handleSubmitChallenges}
                       submitted={challengesSubmitted}
+                      onSignalWhy={() => handleWhyClick('signal')}
+                      onUpdateWhy={() => handleWhyClick('update')}
                     />
                   )}
                 </div>
@@ -1253,6 +1671,7 @@ export default function Home() {
                   <ArbitrationPanel
                     specialists={state.specialists}
                     arbitrations={state.arbitrations}
+                    onWhyClick={() => handleWhyClick('arbitrator')}
                   />
                 )}
               </>
@@ -1264,6 +1683,7 @@ export default function Home() {
                 status={state.synthesisStatus ?? 'pending'}
                 partialOutput={state.synthesisPartialOutput}
                 verdict={state.verdict}
+                onWhyClick={() => handleWhyClick('synthesis')}
               />
             )}
 
@@ -1272,6 +1692,9 @@ export default function Home() {
                 Done. The floor will reopen shortly.
               </p>
             )}
+
+            {/* Event log */}
+            {showEventLog && <EventLog entries={eventLog} />}
           </div>
         )}
       </div>

@@ -133,3 +133,29 @@ Gotchas:
 pnpm typecheck: PASS
 pnpm test: 62/62 PASS
 
+---
+
+Issue #6 — Educational layer, pirate personas, Continue-As-New, polish (COMPLETE, 2026-02-21)
+
+New files:
+- apps/api/app/globals.css: Added @keyframes fadeInUp and slideInRight for arbitrator node entrance animations and the WhyDrawer slide-in.
+
+Changed files:
+- apps/worker/workflows/reviewWorkflow.ts: Added `_resumeState?: ReviewState` to workflow args (optional, backward-compatible). Added `CAN_THRESHOLD = 10_000` and three Continue-As-New checkpoints (post-specialists, post-challenge, post-arbitrations). Refactored arbitrator fan-out to derive merge map from `state.mutineerChallenges` + `state.humanChallenges` (instead of local `mutineerResult`) so it's resume-safe. Added phase-skip guards: `if (!state.diff)` for Step 1, `if (!specialistsDone())` for Step 2, `if (!challengePhaseDone())` for Step 3. Arbitration slots initialized before CAN checkpoint 2 so resumed executions find populated slots.
+
+- apps/api/app/page.tsx:
+  - WHY_COPY constant: hand-written educational copy for 8 node types.
+  - WhyDrawer component: fixed right-side overlay with slideInRight animation.
+  - WhyBtn component: small "?" button wired to specialist nodes (React Flow onNodeClick), Mutineer panel, Extend Signal button, Submit Challenges Update button, Arbitrator panel, Synthesis panel.
+  - EventLog component: semantic event labels tracked client-side via useEffect on state transitions. No raw Temporal event type names.
+  - Persona polish: BARNACLE description fixed to "20-year greybeard." Arbitrator cards show "SPECIALIST's finding" from finding ID prefix. Verdict findings show specialist name in uppercase.
+  - CSS transitions: `transition-all duration-300` on all status-colored borders. `animate-fade-in-up` on new arbitration cards. Streaming text retains blinking cursor (animate-pulse ▋).
+
+Gotchas:
+- Continue-As-New is verified by compilation only — TestWorkflowEnvironment never produces historyLength > 10_000. The phase-skip logic (specialistsDone, challengePhaseDone, synthesisStatus check) is structured for correct production behavior.
+- `wf.continueAsNew<typeof reviewWorkflow>()` returns Promise<never>; no return needed after the await.
+- React Flow onNodeClick signature: (event, node) — whyKey is read from node.data in the callback.
+
+pnpm typecheck: PASS
+pnpm test: 62/62 PASS
+
