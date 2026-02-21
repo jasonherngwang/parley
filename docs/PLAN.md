@@ -38,6 +38,7 @@
 | 4 | Parallel challenge phase (Mutineer + human window + arbitration) | COMPLETE | — |
 | 5 | Synthesis, verdict, and run history | COMPLETE | — |
 | 6 | Educational layer, pirate personas, Continue-As-New, polish | COMPLETE | — |
+| 7 | Full-page interactive DAG | COMPLETE | — |
 
 ---
 
@@ -260,7 +261,7 @@ const findingSchema = z.object({
 
 ## Issue #4 — Parallel challenge phase (Mutineer + human window + arbitration)
 
-**Status: BLOCKED by #3**
+**Status: COMPLETE**
 
 ### What to build
 
@@ -334,7 +335,7 @@ apps/api/app/page.tsx                        # Human review panel + Mutineer nod
 
 ## Issue #5 — Synthesis, verdict, and run history
 
-**Status: BLOCKED by #4**
+**Status: COMPLETE**
 
 ### What to build
 
@@ -431,6 +432,270 @@ The layer that transforms a working demo into a pedagogical showcase. Named pira
 ### User stories addressed
 
 4, 5, 6, 24, 25
+
+---
+
+## Issue #7 — Full-page interactive DAG
+
+**Status: COMPLETE**
+
+### What to build
+
+Replace the current vertical-scroll layout with a full-viewport ReactFlow canvas where every stage of the review pipeline is a draggable, clickable node connected by animated edges. The entire review workflow plays out as a living, growing graph — nodes materialize and wire themselves to predecessors as each stage unlocks. The user can pan, zoom, and drag nodes freely. The graph is the UI.
+
+The visual design must make two things obvious at a glance: (1) this is a **dynamic DAG** — nodes appear at runtime, the arbitrator fan-out count is unknown until challenges are merged, and the graph grows downward as the pipeline progresses; (2) a **durable workflow orchestrator** is doing real work — every node wears a Temporal primitive badge (Activity, Timer, Signal, Update), retries are visible, join gates show synchronization, and the whole graph reconstructs from persisted state on page refresh.
+
+No backend changes. The SSE data shape, API routes, and workflow code are untouched. This is a pure frontend refactor.
+
+### Design principles
+
+1. **The graph IS the interface.** No scrolling column of panels. Every piece of review state lives inside a ReactFlow node on a full-viewport canvas. Floating overlays only for things that don't belong in the graph (submission form, event log, history modal, why drawer).
+2. **Progressive materialization.** Nodes don't pre-exist. They fade in (with `animate-fade-in-up`) as their stage activates. Edges animate in when source and target both exist. The canvas starts empty and grows.
+3. **Temporal primitives are visible.** Every node has a small badge/pill in its header showing the Temporal primitive it represents: `Activity`, `Timer`, `Signal`, `Update`. Color-coded. This teaches the viewer that every box maps to a real Temporal concept.
+4. **Data flow is animated.** Edges pulse/animate while data flows between nodes (specialist streaming, mutineer running). Edges settle to solid green on completion, solid red on failure.
+5. **The camera follows the action.** When a new level of nodes appears, `fitView` smoothly transitions to include them. The user can freely pan/zoom after, and a "re-center" button resets the view.
+6. **Interactive elements work inside nodes.** The Human Window node contains textareas and buttons. Use `noDragClassName` on all interactive elements so they don't trigger node dragging.
+
+### Packages
+
+No new packages needed. `@xyflow/react@^12` already provides `ReactFlow`, `MiniMap`, `Controls`, `Background`, `Handle`, custom node/edge support, `useNodesState`, `useEdgesState`, `fitView`, animated edges, and `smoothstep` edge type.
+
+### Suggested file changes
+
+Split the 1700-line `page.tsx` monolith into focused modules:
+
+```
+apps/api/app/
+├── page.tsx                         # Slim shell: SSE + state + mounts FlowCanvas + overlays
+├── globals.css                      # Add edge glow keyframes + node entrance animations
+├── components/
+│   ├── FlowCanvas.tsx               # Full-viewport ReactFlow + buildNodesAndEdges()
+│   ├── nodes/
+│   │   ├── PRNode.tsx               # PR metadata (title, repo, number)
+│   │   ├── SpecialistNode.tsx       # Existing specialist node (extracted, badge added)
+│   │   ├── JoinGateNode.tsx         # Small diamond/pill showing "N/M done"
+│   │   ├── MutineerNode.tsx         # Mutineer streaming + challenge count
+│   │   ├── HumanWindowNode.tsx      # Timer + per-finding textareas + extend/submit buttons
+│   │   ├── ArbitratorNode.tsx       # Per-finding ruling (upheld/overturned badge)
+│   │   └── SynthesisNode.tsx        # Final verdict + finding summary
+│   ├── overlays/
+│   │   ├── SubmissionCard.tsx       # Floating PR URL form (floor-open state)
+│   │   ├── EventLog.tsx             # Collapsible floating terminal, bottom-left
+│   │   ├── WhyDrawer.tsx            # Slide-in panel (existing, extracted)
+│   │   └── HistoryModal.tsx         # History list modal (existing, extracted)
+│   └── shared.tsx                   # statusColor, statusDot, badges, severity helpers
+```
+
+### Node types
+
+Every custom node component receives its data via ReactFlow's `{ data }` prop. All nodes follow the same visual pattern: rounded-xl card, 2px border colored by status, dark `bg-gray-900` fill, Temporal primitive badge in the header.
+
+#### 1. PRNode
+- **Appears:** immediately when review starts (before diff is fetched)
+- **Shows:** PR URL (while fetching), then repo name + PR number + title
+- **Badge:** none (this is workflow input, not a primitive)
+- **Size:** ~400px wide, single row of metadata
+- **Handles:** one source handle at bottom-center
+
+#### 2. SpecialistNode (existing, extracted + enhanced)
+- **Appears:** when specialist status transitions from undefined to `pending` or `running`
+- **Shows:** persona name (IRONJAW/BARNACLE/GREENHAND), character tagline, status dot, attempt counter, streaming partial output while running, severity-grouped finding summary when complete
+- **Badge:** `Activity` (blue pill)
+- **Size:** ~250px wide
+- **Handles:** target at top, source at bottom
+- **Retry visual:** when `attemptNumber > 1`, the attempt counter pulses amber and the border briefly flashes amber before returning to the running blue
+
+#### 3. JoinGateNode
+- **Appears:** immediately alongside the nodes it gates (Join Gate 1 appears with specialists, Join Gate 2 appears with challenge phase)
+- **Shows:** small rounded-pill, ~120px wide. Label: "Join Gate". Progress: `2/3 done` updating live. When all inputs are complete, border turns green and label changes to a checkmark
+- **Badge:** none (this is workflow logic, not a single primitive)
+- **Size:** small — ~120×40px
+- **Handles:** target at top, source at bottom
+- **Visual:** starts with dashed gray border. Each completed input fills a progress segment. When full, border goes solid green with a brief glow animation
+
+#### 4. MutineerNode
+- **Appears:** when `mutineerStatus` transitions to `running` (after Join Gate 1)
+- **Shows:** persona name, character tagline, streaming partial output, final "challenged N findings" summary
+- **Badge:** `Activity` (blue pill)
+- **Size:** ~280px wide
+- **Handles:** target at top, source at bottom
+
+#### 5. HumanWindowNode
+- **Appears:** when `windowOpen` becomes `true`
+- **Shows:** countdown timer (large, prominent, labeled "Durable Timer"), per-finding challenge textareas (scrollable, max-height ~200px), "Extend +2 min" button with Signal badge, "Submit Challenges" button with Update badge
+- **Badge:** `Timer` (teal pill) on the node header. The Extend button has a small `Signal` label. The Submit button has a small `Update` label. This node demonstrates three Temporal primitives in one place
+- **Size:** ~350px wide (widest node — needs room for textareas)
+- **Handles:** target at top, source at bottom
+- **Interactive elements:** all buttons and textareas get `className="noDrag"` (ReactFlow's built-in class to prevent drag on interactive children). Alternatively, use `noDragClassName="noDrag"` on the ReactFlow component and apply `"noDrag"` to interactive wrappers
+- **After submission or expiry:** textareas become disabled, timer shows "Submitted" or "Expired", node border dims
+
+#### 6. ArbitratorNode
+- **Appears:** dynamically after Join Gate 2 — one per disputed finding. Count is unknown until challenges are merged. Nodes fade in one by one (staggered 100ms delay per node for visual effect)
+- **Shows:** finding ID + specialist name, challenge source badges (MUTINEER / Human / both), ruling badge when complete (upheld=red, overturned=green, inconclusive=gray), 2-3 sentence reasoning
+- **Badge:** `Activity` (blue pill)
+- **Size:** ~250px wide
+- **Handles:** target at top, source at bottom
+- **Dynamic fan-out is the key visual:** the graph visibly widens at this level based on how many findings were challenged. If 1 finding was challenged, there's 1 arbitrator. If 6 were challenged, 6 nodes fan out. This makes the dynamic dispatch obvious
+
+#### 7. SynthesisNode
+- **Appears:** when `synthesisStatus` transitions to `running`
+- **Shows:** streaming partial output, then the full verdict: findings grouped by severity, each with specialist name + ruling badge + challenge source badges + recommendation. Summary quote with purple left-border
+- **Badge:** `Activity · deep queue` (purple pill — distinct from the blue fast-queue pills)
+- **Size:** ~450px wide (widest — verdict has rich content)
+- **Handles:** target at top, no source handle (terminal node)
+- **On complete:** border turns purple. The entire graph's edges settle to their final colors. A subtle "Review Complete" floating badge appears
+
+### Edge behavior
+
+Use `smoothstep` edge type (right-angle paths with rounded corners — clean for vertical DAG layout).
+
+| Source → Target | When shown | Active style | Complete style |
+|---|---|---|---|
+| PR → each Specialist | When specialist nodes appear | Animated dashes, blue, 2px, CSS `drop-shadow(0 0 4px #3B82F6)` | Solid green, 1.5px |
+| each Specialist → Join Gate 1 | When specialist node exists | Animated while specialist is running | Solid green when specialist complete |
+| Join Gate 1 → Mutineer | When mutineer appears | Animated while mutineer running | Solid green |
+| Join Gate 1 → Human Window | When human window appears | Static (timer, not activity) | Solid green |
+| Mutineer → Join Gate 2 | When JG2 appears | Animated while mutineer running | Solid green |
+| Human Window → Join Gate 2 | When JG2 appears | Static | Solid green when submitted/expired |
+| Join Gate 2 → each Arbitrator | When arbitrator appears | Animated while arbitrating | Solid green |
+| each Arbitrator → Synthesis | When synthesis appears | Animated while synthesizing | Solid purple |
+| Specialists → Synthesis (direct) | If NO challenges were filed | Skip JG2 + arbitrators entirely | Solid purple |
+
+Default inactive edge: `stroke: #4B5563` (gray-600), 1px, no animation.
+
+### Layout algorithm
+
+Manual level-based positioning. No dagre dependency — the pipeline shape is predictable.
+
+```ts
+const LEVEL_Y_GAP = 180;   // vertical distance between levels
+const NODE_X_GAP = 280;    // horizontal gap between sibling nodes
+
+function computeLayout(state: AppState): { nodes: Node[], edges: Edge[] } {
+  // Center X for the canvas (e.g., 600)
+  const centerX = 600;
+  let currentY = 0;
+  const nodes: Node[] = [];
+  const edges: Edge[] = [];
+
+  // Level 0: PR Node (always present when running)
+  // Place at (centerX - halfWidth, currentY)
+
+  // Level 1: Specialists (3 nodes centered)
+  // x = centerX + (i - 1) * NODE_X_GAP  for i in [0,1,2]
+  currentY += LEVEL_Y_GAP;
+
+  // Level 2: Join Gate 1
+  currentY += LEVEL_Y_GAP * 0.6;  // tighter spacing for small gate node
+
+  // Level 3: Mutineer (left) + Human Window (right)
+  currentY += LEVEL_Y_GAP;
+  // mutineer: centerX - NODE_X_GAP * 0.7
+  // human:    centerX + NODE_X_GAP * 0.7
+
+  // Level 4: Join Gate 2
+  currentY += LEVEL_Y_GAP * 0.6;
+
+  // Level 5: Arbitrators (N nodes, centered)
+  // x = centerX + (i - (N-1)/2) * NODE_X_GAP  for i in [0..N-1]
+  currentY += LEVEL_Y_GAP;
+
+  // Level 6: Synthesis
+  currentY += LEVEL_Y_GAP;
+
+  return { nodes, edges };
+}
+```
+
+Nodes are only added to the array when their stage is active. The function derives the complete node/edge list from `AppState` on every SSE tick.
+
+### Camera behavior
+
+- **Initial (floor-open):** empty canvas with subtle grid, submission card floating in center
+- **Review starts:** submission card animates out, PR node fades in, `fitView({ duration: 600, padding: 0.4 })`
+- **New level appears:** call `fitView({ duration: 600, padding: 0.3 })` after a short delay (100ms) to let the new nodes render
+- **User pans/zooms:** respect their position — stop auto-fitting. Set a `userHasInteracted` flag on `onMoveStart`. Clear it when a new review starts
+- **Re-center button:** in the floating controls, resets `userHasInteracted` and calls `fitView`
+- **Past review loaded:** render full completed graph, then `fitView`
+
+### Floating overlays (positioned with CSS `fixed`, not inside ReactFlow)
+
+1. **SubmissionCard** — centered on screen when floor is open. `bg-gray-900/95 backdrop-blur` with border. Contains PR URL input, context textarea, submit button. Animates out (fade + scale) when review starts. A small "New Review" button appears in the top-left corner when a review completes and the floor reopens
+2. **EventLog** — fixed bottom-left, ~320px wide, max-height ~200px. Collapsible (click to toggle). Semi-transparent background. Shows the semantic event stream entries. Same content as current EventLog component
+3. **WhyDrawer** — existing slide-in panel, fixed right side. Opens when any node is clicked. Shows the Temporal primitive explanation for that node type. Unchanged behavior, just extracted to its own file
+4. **HistoryModal** — existing modal. Unchanged behavior, extracted to its own file
+5. **Header bar** — fixed top, full width, slim. "PARLEY" title left-aligned, History button right-aligned. Semi-transparent `bg-gray-950/80 backdrop-blur`
+6. **ReactFlow Controls** — use `<Controls />` from xyflow, positioned bottom-right. Zoom in/out/fit buttons. Add a custom "re-center" button that calls `fitView`
+7. **ReactFlow MiniMap** — `<MiniMap />` from xyflow, positioned bottom-right above Controls. Shows node positions in miniature. Use dark theme colors: `nodeColor` based on node status, `maskColor` translucent dark
+
+### Past reviews on the canvas
+
+When a past review is loaded from history, render the full graph in completed state — all nodes present, all edges solid green/purple, all findings/rulings visible. Read-only mode: Human Window node shows "Submitted" or "Expired" with no interactive elements. The user can pan/zoom/drag to explore the historical review. A floating "Close" button dismisses the past review and returns to floor-open.
+
+### What to implement
+
+1. **Extract components from `page.tsx`:** move WhyDrawer, EventLog, HistoryModal, PastReviewPanel, severity helpers, and status utilities into their own files under `components/`. This is pure extraction with no behavior changes — do it first to make the refactor manageable.
+
+2. **Create node components:** build PRNode, SpecialistNode (enhance existing), JoinGateNode, MutineerNode, HumanWindowNode, ArbitratorNode, SynthesisNode. Each is a React component accepting `{ data }` from ReactFlow. Each renders a card with the Temporal primitive badge in its header. Register all in a `nodeTypes` object.
+
+3. **Temporal primitive badges:** small pill/tag in each node's header row. Render with: `<span className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide">Activity</span>`. Color scheme: Activity (fast) = `bg-blue-900 text-blue-300 border-blue-700`, Activity (deep) = `bg-purple-900 text-purple-300 border-purple-700`, Timer = `bg-teal-900 text-teal-300 border-teal-700`, Signal = `bg-amber-900 text-amber-300 border-amber-700`, Update = `bg-violet-900 text-violet-300 border-violet-700`.
+
+4. **Build `FlowCanvas.tsx`:** the core component. Full-viewport `<ReactFlow>` with:
+   - `nodeTypes` registering all 7 custom nodes
+   - `edgeType="smoothstep"` default
+   - `nodesDraggable={true}`, `nodesConnectable={false}`, `elementsSelectable={true}`
+   - `panOnDrag={true}`, `zoomOnScroll={true}`, `zoomOnPinch={true}`
+   - `fitView`, `fitViewOptions={{ padding: 0.3, duration: 600 }}`
+   - `proOptions={{ hideAttribution: true }}`
+   - `<Background variant="dots" color="#1F2937" gap={20} size={1} />` — subtle dot grid
+   - `<MiniMap />` with dark theme
+   - `<Controls />` with custom re-center button
+   - `onNodeClick` handler → opens WhyDrawer for the clicked node type
+   - `noDragClassName="noDrag"` so interactive elements inside nodes work
+
+5. **Build `buildNodesAndEdges(state, callbacks)` function:** pure function that takes `AppState` and callback props (onExtend, onSubmit, etc.), returns `{ nodes: Node[], edges: Edge[] }`. Implements the level-based layout algorithm. Only creates nodes for active stages. Computes edge styling based on source/target node status. This function is called on every state change.
+
+6. **Wire up `page.tsx`:** slim shell that:
+   - Manages SSE connection (existing logic)
+   - Manages `AppState` (existing logic)
+   - Manages overlay state (selectedWhy, showHistory, pastReview, challengesSubmitted)
+   - Renders: `<FlowCanvas>` as full viewport background, floating overlays on top
+   - Passes event handlers (handleExtend, handleSubmitChallenges, etc.) through node data
+
+7. **Add CSS animations to `globals.css`:**
+   - `@keyframes edgeGlow` — pulsing `filter: drop-shadow` for active edges
+   - `@keyframes gateUnlock` — brief green glow burst when join gate completes
+   - `@keyframes nodeEntrance` — scale(0.95) + opacity(0) → scale(1) + opacity(1), 400ms
+   - Extend existing `animate-fade-in-up` for staggered arbitrator entrance
+
+8. **Handle interactive Human Window node:** the HumanWindowNode component receives callbacks via `data` prop: `data.onExtend`, `data.onSubmit`, `data.specialists`, `data.windowOpen`, `data.secondsRemaining`, `data.submitted`. All buttons and textareas wrapped in `<div className="noDrag">`. Local countdown state (tick every 1s) kept inside the node component.
+
+9. **Past review rendering:** when `pastReview` is set, pass it through `buildNodesAndEdges` as a synthetic `CompleteState`. All nodes render in their completed visual state. HumanWindowNode renders read-only (disabled textareas, no buttons). A floating "Close Past Review" button dismisses it.
+
+10. **fitView orchestration:** track `userHasInteracted` via `onMoveStart` callback. On state changes that add new node levels, call `reactFlowInstance.fitView()` only if `!userHasInteracted`. Provide a "re-center" button in the Controls that resets the flag and calls `fitView`.
+
+### Acceptance criteria
+
+- [x] ReactFlow canvas fills the full browser viewport (`100vw × 100vh`)
+- [x] All nodes are draggable; canvas supports pan (drag background) and zoom (scroll/pinch)
+- [x] Floor-open state: empty canvas with floating submission card centered
+- [x] Review starts: PR node appears, specialists fade in below with edges from PR node
+- [x] Specialist nodes show `Activity` badge, streaming output, retry counter, findings on complete
+- [x] Join Gate 1 shows progress (`2/3`, `3/3`) and visually unlocks when all specialists finish
+- [x] Mutineer and Human Window nodes appear side-by-side below Join Gate 1
+- [x] Human Window node has working textareas, countdown timer, Extend (Signal badge) and Submit (Update badge) buttons — all functional within the canvas
+- [x] Edges animate (dashed + glow) while data is flowing; settle to solid green on complete
+- [x] Arbitrator nodes fan out dynamically — count matches disputed findings
+- [x] Synthesis node appears at bottom with `Activity · deep queue` purple badge
+- [x] Clicking any node opens the Why drawer with Temporal primitive explanation
+- [x] MiniMap visible in corner for orientation
+- [x] Controls (zoom in/out/fit/re-center) visible
+- [x] Camera auto-fits to include new nodes as stages unlock (unless user has manually panned)
+- [x] Page refresh mid-review reconstructs the full graph from SSE state
+- [x] Past reviews render as a complete read-only graph on the canvas
+- [x] Event log floats in bottom-left corner, collapsible
+- [x] No backend changes — SSE data shape, API routes, and workflow code are untouched
+- [x] `pnpm typecheck` passes
 
 ---
 

@@ -159,3 +159,31 @@ Gotchas:
 pnpm typecheck: PASS
 pnpm test: 62/62 PASS
 
+---
+
+Issue #7 — Full-page interactive DAG (COMPLETE, 2026-02-21)
+
+Pure frontend refactor replacing the vertical-scroll layout with a full-viewport ReactFlow canvas. No backend changes.
+
+New files:
+- apps/api/app/components/shared.tsx: extracted all types, helpers, Temporal primitive badge components, WHY_COPY educational content.
+- apps/api/app/components/FlowCanvas.tsx: full-viewport ReactFlow with 7 custom node types, buildNodesAndEdges() level-based layout, smoothstep edges, auto-fitView, camera tracking.
+- apps/api/app/components/nodes/: PRNode, SpecialistNode, JoinGateNode, MutineerNode, HumanWindowNode, ArbitratorNode, SynthesisNode.
+- apps/api/app/components/overlays/: SubmissionCard, EventLog (collapsible), WhyDrawer, HistoryModal.
+
+Changed files:
+- apps/api/app/page.tsx: rewritten as slim shell (~200 lines). SSE + state + FlowCanvas + floating overlays.
+- apps/api/app/globals.css: added animate-node-entrance, edge-glow, animate-gate-unlock, React Flow dark theme overrides.
+- tests/synthesis.test.ts: fixed pre-existing heartbeat count assertion (2 → 3) to match extra heartbeat({ phase: 'extracting' }) call.
+
+Architecture:
+- 7 node types: pr, specialist, joingate, mutineer, humanwindow, arbitrator, synthesis.
+- Level-based layout: PR → Specialists → JG1 → Mutineer+Human → JG2 → Arbitrators (dynamic fan-out) → Synthesis.
+- Edges: animated+glow while active, solid green on complete, purple for synthesis.
+- Camera: auto-fitView unless user has manually panned; re-center button.
+- noDragClassName="noDrag" for interactive elements inside HumanWindowNode.
+- Past reviews render as full completed graph via pastReviewToState().
+
+pnpm typecheck: PASS
+pnpm test: 62/62 PASS
+

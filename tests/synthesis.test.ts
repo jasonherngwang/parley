@@ -102,13 +102,17 @@ describe('runSynthesis', () => {
       arbitrationOutcomes: [],
     });
 
-    // Should have called heartbeat for each chunk
-    expect(vi.mocked(heartbeat)).toHaveBeenCalledTimes(2);
+    // Should have called heartbeat for each chunk + once before generateText
+    expect(vi.mocked(heartbeat)).toHaveBeenCalledTimes(3);
     expect(vi.mocked(heartbeat).mock.calls[0][0]).toEqual({
       partialOutput: 'Critical ',
     });
     expect(vi.mocked(heartbeat).mock.calls[1][0]).toEqual({
       partialOutput: 'Critical finding found.',
+    });
+    expect(vi.mocked(heartbeat).mock.calls[2][0]).toEqual({
+      partialOutput: 'Critical finding found.',
+      phase: 'extracting',
     });
   });
 
