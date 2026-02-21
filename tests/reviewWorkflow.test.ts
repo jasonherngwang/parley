@@ -3,6 +3,7 @@ import { Worker } from '@temporalio/worker';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import type { PRDiffResult } from '../apps/worker/activities/fetchGitHubPRDiff';
+import type { SpecialistResult } from '../apps/worker/activities/specialists';
 
 const FIXTURE_DIFF = `--- a/src/auth.ts
 +++ b/src/auth.ts
@@ -24,6 +25,11 @@ const mockFetchGitHubPRDiff = async (args: {
   submitterContext: args.context ?? '',
 });
 
+const mockSpecialist = async (): Promise<SpecialistResult> => ({
+  findings: [],
+  rawText: 'Mock specialist output',
+});
+
 describe('reviewWorkflow (Issue #2)', () => {
   let testEnv: TestWorkflowEnvironment;
 
@@ -40,7 +46,12 @@ describe('reviewWorkflow (Issue #2)', () => {
       connection: testEnv.nativeConnection,
       taskQueue: 'test-review-pr',
       workflowsPath: path.resolve(__dirname, '../apps/worker/workflows'),
-      activities: { fetchGitHubPRDiff: mockFetchGitHubPRDiff },
+      activities: {
+        fetchGitHubPRDiff: mockFetchGitHubPRDiff,
+        runIronjaw: mockSpecialist,
+        runBarnacle: mockSpecialist,
+        runGreenhand: mockSpecialist,
+      },
     });
 
     await worker.runUntil(async () => {
@@ -72,7 +83,12 @@ describe('reviewWorkflow (Issue #2)', () => {
       connection: testEnv.nativeConnection,
       taskQueue: 'test-review-pr-ctx',
       workflowsPath: path.resolve(__dirname, '../apps/worker/workflows'),
-      activities: { fetchGitHubPRDiff: mockFetchGitHubPRDiff },
+      activities: {
+        fetchGitHubPRDiff: mockFetchGitHubPRDiff,
+        runIronjaw: mockSpecialist,
+        runBarnacle: mockSpecialist,
+        runGreenhand: mockSpecialist,
+      },
     });
 
     await worker.runUntil(async () => {
@@ -98,7 +114,12 @@ describe('reviewWorkflow (Issue #2)', () => {
       connection: testEnv.nativeConnection,
       taskQueue: 'test-review-pr-seq',
       workflowsPath: path.resolve(__dirname, '../apps/worker/workflows'),
-      activities: { fetchGitHubPRDiff: mockFetchGitHubPRDiff },
+      activities: {
+        fetchGitHubPRDiff: mockFetchGitHubPRDiff,
+        runIronjaw: mockSpecialist,
+        runBarnacle: mockSpecialist,
+        runGreenhand: mockSpecialist,
+      },
     });
 
     await worker.runUntil(async () => {

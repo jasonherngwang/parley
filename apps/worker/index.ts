@@ -1,5 +1,6 @@
 import { NativeConnection, Worker } from '@temporalio/worker';
-import * as activities from './activities/fetchGitHubPRDiff';
+import * as fetchActivities from './activities/fetchGitHubPRDiff';
+import * as specialistActivities from './activities/specialists';
 
 async function run() {
   const address = process.env.TEMPORAL_ADDRESS ?? 'localhost:7233';
@@ -12,7 +13,7 @@ async function run() {
       connection,
       taskQueue: 'review-fast',
       workflowsPath: require.resolve('./workflows'),
-      activities,
+      activities: { ...fetchActivities, ...specialistActivities },
     });
 
     console.log('Worker started on task queue: review-fast');

@@ -27,17 +27,11 @@ export async function GET(request: Request) {
             try {
               const client = await getTemporalClient();
               const handle = client.workflow.getHandle(active.workflowId);
-              const state = await handle.query<{
-                status: string;
-                prUrl: string;
-                title?: string;
-                repoName?: string;
-                prNumber?: number;
-              }>('getReviewState');
+              const state = await handle.query('getReviewState');
 
-              send({ type: state.status, ...state });
+              send({ type: (state as { status: string }).status, ...(state as Record<string, unknown>) });
 
-              if (state.status === 'complete') {
+              if ((state as { status: string }).status === 'complete') {
                 clearActiveWorkflow();
               }
             } catch {

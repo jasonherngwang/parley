@@ -1,0 +1,78 @@
+Parley — Progress Log
+=====================
+Append a note here after completing each issue. Include: issue number, what was done, any gotchas or decisions made.
+
+---
+
+Issue #1 — Infrastructure & Hello World tracer (COMPLETE, 2026-02-20)
+
+All infrastructure scaffolding was already in place:
+- docker-compose.yml with 6 services (postgresql, temporal-admin-tools, temporal, temporal-ui, parley-worker, parley-api) on shared temporal-network bridge
+- apps/worker/index.ts: NativeConnection + Worker on review-fast task queue, SIGTERM handler
+- apps/worker/workflows/reviewWorkflow.ts: accepts { input }, runs echoActivity, sleeps 2s, exposes getReviewState query
+- apps/worker/activities/mock.ts: echoActivity placeholder
+- lib/db.ts: SQLite singleton with active_workflow table (single-row constraint enforces one-at-a-time)
+- lib/temporal.ts: Temporal client singleton respecting TEMPORAL_ADDRESS env var
+- POST /api/review/start: validates empty floor, starts workflow, stores row, returns workflowId (409 if already running)
+- GET /api/review/stream: SSE endpoint polling getReviewState every 1s, emits floor-open when idle, clears DB on completion
+- app/page.tsx: three-state UI (floor-open / running / complete) driven by EventSource SSE
+
+Fix applied: tests/reviewWorkflow.test.ts used require.resolve('../apps/worker/workflows') which fails because Node's native resolver doesn't handle .ts files. Changed to path.resolve(__dirname, '../apps/worker/workflows') — Temporal's internal webpack bundler then handles TypeScript compilation. Both tests now pass.
+
+pnpm typecheck: PASS
+pnpm test: 2/2 PASS
+
+---
+
+Issue #2 — GitHub PR submission (COMPLETE, 2026-02-20)
+
+New files:
+- lib/github.ts: parseGitHubPRUrl (regex validates github.com/{owner}/{repo}/pull/{number}) + fetchPRFiles (calls GitHub public API, builds unified diff from file patches)
+- apps/worker/activities/fetchGitHubPRDiff.ts: calls lib/github helpers, enforces 500-line cap via ApplicationFailure.nonRetryable, heartbeats during fetch. Retry policy: max 2 attempts, 1s backoff, 45s startToCloseTimeout, 15s heartbeatTimeout.
+
+Changed files:
+- apps/worker/workflows/reviewWorkflow.ts: input changed from { input: string } to { prUrl, context? }. First step fetches PR diff via proxyActivities, stores title/repoName/prNumber/diff in state. No sleep placeholder.
+- apps/worker/index.ts: now imports fetchGitHubPRDiff activity instead of echoActivity.
+- apps/api/app/api/review/start/route.ts: validates request body with zod schema, calls parseGitHubPRUrl for URL format check before starting workflow, passes { prUrl, context } to workflow.
+- apps/api/app/api/review/stream/route.ts: updated query type to reflect new ReviewState shape.
+- apps/api/app/page.tsx: replaced textarea with PR URL input + optional context textarea. Running state shows PR title/repo once fetched (or loading message before). Complete state shows PR title/repo.
+
+Tests (16 total):
+- tests/github.test.ts: 8 unit tests for parseGitHubPRUrl (valid URLs, invalid URLs, edge cases)
+- tests/fetchGitHubPRDiff.test.ts: 5 tests mocking @temporalio/activity and lib/github — covers happy path, context passthrough, 500-line limit, correct call arguments
+- tests/reviewWorkflow.test.ts: 3 workflow integration tests using TestWorkflowEnvironment with mock fetchGitHubPRDiff — covers PR metadata in state, context stored, sequential workflows
+
+Gotchas:
+- zod 4.3.6 was installed (latest). If AI SDK v6 in Issue #3 requires zod v3, may need to downgrade or use compatibility layer.
+- @temporalio/activity heartbeat() throws if called outside activity context — mocked via vi.mock in unit tests.
+- The vi.mock factory for @temporalio/activity manually implements ApplicationFailure.nonRetryable as a static method returning an Error subclass — this is sufficient for testing the throw/nonRetryable flag behavior.
+
+pnpm typecheck: PASS
+pnpm test: 16/16 PASS
+
+---
+
+Issue #3 — Parallel specialist agents (streaming) (COMPLETE, 2026-02-21)
+
+New files:
+- lib/models.ts: geminiFlashLite (gemini-2.5-flash-lite-preview-06-17) and geminiPro (gemini-2.5-pro) model configs via @ai-sdk/google. Read GEMINI_FAST_MODEL / GEMINI_DEEP_MODEL env vars.
+- apps/worker/activities/specialists.ts: runIronjaw, runBarnacle, runGreenhand activities. Each uses streamText (no await, for live heartbeating of partial tokens) then generateText with Output.object for structured finding extraction. Finding IDs prefixed per persona (ironjaw-N, barnacle-N, greenhand-N). Prompts written in pirate first-person ship's log voice.
+- tests/specialists.test.ts: 10 unit tests mocking ai SDK and @temporalio/activity — covers rawText accumulation, heartbeat calls, context passthrough, system prompt content, empty/null findings.
+- tests/reviewWorkflowSpecialists.test.ts: 3 workflow integration tests — parallel dispatch stores all findings, query returns specialist status, context and diff pass through to specialists.
+
+Changed files:
+- apps/worker/workflows/reviewWorkflow.ts: added SpecialistState + specialists field to ReviewState. After fetchGitHubPRDiff, dispatches all three specialists via Promise.all, each wrapped in CancellationScope.withTimeout(45_000). Timed-out slots set to { status: 'timed-out', findings: null }. Join gate fires when all three resolve.
+- apps/worker/index.ts: registers both fetchActivities and specialistActivities on the review-fast worker.
+- apps/api/app/api/review/stream/route.ts: removed explicit query type annotation (spreads full ReviewState through).
+- apps/api/app/page.tsx: added SpecialistDAG component using React Flow (@xyflow/react) with custom SpecialistNode components. Nodes show status color, attempt counter, streaming tokens while running, finding summary on completion.
+- tests/reviewWorkflow.test.ts: added runIronjaw/runBarnacle/runGreenhand mocks to all three test workers (required since workflow now dispatches specialists).
+
+Gotchas:
+- AI SDK v6 text-delta chunks use part.text (not part.textDelta as in v5).
+- zod v4 is compatible with ai SDK v6 peer dep (^3.25.76 || ^4.1.8).
+- CancellationScope.withTimeout integration test with a forever-hanging mock activity cannot be tested in time-skipping env (activity runs in real time, only wf.sleep is skipped). The timeout behavior is tested via Temporal's own guarantees.
+- streamText returns synchronously (no await) — call without await, then for-await over result.fullStream.
+
+pnpm typecheck: PASS
+pnpm test: 29/29 PASS
+
