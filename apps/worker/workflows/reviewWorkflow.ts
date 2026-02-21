@@ -3,8 +3,11 @@ import type * as fetchActivities from '../activities/fetchGitHubPRDiff';
 import type * as specialistActivities from '../activities/specialists';
 import type * as mutineerActivities from '../activities/mutineer';
 import type * as arbitratorActivities from '../activities/arbitrator';
+import type * as synthesisActivities from '../activities/synthesis';
+import type * as historyActivities from '../activities/history';
 import type { Finding, SpecialistResult } from '../activities/specialists';
 import type { MutineerResult, MutineerChallenge } from '../activities/mutineer';
+import type { SynthesisVerdict } from '../activities/synthesis';
 
 const { fetchGitHubPRDiff } = wf.proxyActivities<typeof fetchActivities>({
   startToCloseTimeout: '45s',
@@ -45,6 +48,24 @@ const { runArbitrator } = wf.proxyActivities<typeof arbitratorActivities>({
   },
 });
 
+const { runSynthesis } = wf.proxyActivities<typeof synthesisActivities>({
+  taskQueue: 'review-deep',
+  startToCloseTimeout: '3 minutes',
+  heartbeatTimeout: '30s',
+  retry: {
+    maximumAttempts: 2,
+    initialInterval: '5s',
+  },
+});
+
+const { writeHistoryRecord } = wf.proxyActivities<typeof historyActivities>({
+  startToCloseTimeout: '30s',
+  retry: {
+    maximumAttempts: 3,
+    initialInterval: '1s',
+  },
+});
+
 export type SpecialistStatus =
   | 'pending'
   | 'running'
@@ -53,6 +74,8 @@ export type SpecialistStatus =
   | 'failed';
 
 export type MutineerStatus = 'pending' | 'running' | 'complete' | 'failed';
+
+export type SynthesisStatus = 'pending' | 'running' | 'complete' | 'failed';
 
 export interface SpecialistState {
   status: SpecialistStatus;
@@ -90,6 +113,10 @@ export interface ReviewState {
   mutineerPartialOutput?: string;
   mutineerChallenges: MutineerChallenge[];
   arbitrations: ArbitrationState[];
+  // Phase 3: synthesis
+  synthesisStatus: SynthesisStatus;
+  synthesisPartialOutput?: string;
+  verdict?: SynthesisVerdict;
 }
 
 // Signals and updates
@@ -143,6 +170,7 @@ export async function reviewWorkflow(args: {
     mutineerStatus: 'pending',
     mutineerChallenges: [],
     arbitrations: [],
+    synthesisStatus: 'pending',
   };
 
   wf.setHandler(getReviewState, () => state);
@@ -415,6 +443,58 @@ export async function reviewWorkflow(args: {
   });
 
   await Promise.all(arbitrationPromises);
+
+  // ── Step 5: Synthesis ──────────────────────────────────────────────────────
+  // Ensure all signal/update handlers have finished before reading final state
+  await wf.condition(wf.allHandlersFinished);
+
+  state = { ...state, synthesisStatus: 'running' };
+
+  const specialistOutputs: Record<string, Finding[] | null> = {
+    ironjaw: state.specialists.ironjaw.findings,
+    barnacle: state.specialists.barnacle.findings,
+    greenhand: state.specialists.greenhand.findings,
+  };
+
+  const arbitrationOutcomes = state.arbitrations
+    .filter((a) => a.ruling !== undefined)
+    .map((a) => ({
+      findingId: a.findingId,
+      challengeSources: a.challengeSources as string[],
+      ruling: a.ruling!,
+      reasoning: a.reasoning ?? '',
+    }));
+
+  try {
+    const verdictResult = await runSynthesis({
+      specialistOutputs,
+      arbitrationOutcomes,
+    });
+    state = {
+      ...state,
+      synthesisStatus: 'complete',
+      verdict: verdictResult,
+    };
+  } catch {
+    state = { ...state, synthesisStatus: 'failed' };
+  }
+
+  // ── Step 6: Write history record ──────────────────────────────────────────
+  const info = wf.workflowInfo();
+  try {
+    await writeHistoryRecord({
+      workflowId: info.workflowId,
+      prUrl: args.prUrl,
+      prTitle: state.title ?? '',
+      repoName: state.repoName ?? '',
+      startedAt: info.startTime.toISOString(),
+      specialistOutputs,
+      disputeOutcomes: arbitrationOutcomes,
+      verdict: state.verdict ?? { findings: [], summary: '' },
+    });
+  } catch {
+    // Non-fatal: history write failure should not prevent workflow completion
+  }
 
   state = { ...state, status: 'complete' };
   return state;

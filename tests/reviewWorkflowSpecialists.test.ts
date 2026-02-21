@@ -6,6 +6,7 @@ import type { PRDiffResult } from '../apps/worker/activities/fetchGitHubPRDiff';
 import type { SpecialistResult } from '../apps/worker/activities/specialists';
 import type { MutineerResult } from '../apps/worker/activities/mutineer';
 import type { ArbitrationDecision } from '../apps/worker/activities/arbitrator';
+import type { SynthesisVerdict } from '../apps/worker/activities/synthesis';
 
 const FIXTURE_DIFF = `--- a/src/auth.ts
 +++ b/src/auth.ts
@@ -69,6 +70,42 @@ const mockArbitrator = async (): Promise<ArbitrationDecision> => ({
   reasoning: 'Mock arbitration ruling.',
 });
 
+const mockSynthesis = async (): Promise<SynthesisVerdict> => ({
+  findings: [],
+  summary: 'No significant issues.',
+});
+
+const mockWriteHistory = async (): Promise<void> => {};
+
+const WORKFLOWS_PATH = path.resolve(__dirname, '../apps/worker/workflows');
+
+/** Run fn with a fast+deep worker pair, shutting both down when fn completes. */
+async function withWorkers(
+  env: TestWorkflowEnvironment,
+  fastTaskQueue: string,
+  fastActivities: Record<string, unknown>,
+  fn: () => Promise<void>
+): Promise<void> {
+  const fastWorker = await Worker.create({
+    connection: env.nativeConnection,
+    taskQueue: fastTaskQueue,
+    workflowsPath: WORKFLOWS_PATH,
+    activities: { ...fastActivities, writeHistoryRecord: mockWriteHistory },
+  });
+  const deepWorker = await Worker.create({
+    connection: env.nativeConnection,
+    taskQueue: 'review-deep',
+    activities: { runSynthesis: mockSynthesis },
+  });
+  const deepRun = deepWorker.run();
+  try {
+    await fastWorker.runUntil(fn);
+  } finally {
+    deepWorker.shutdown();
+    await deepRun.catch(() => {});
+  }
+}
+
 describe('reviewWorkflow — Issue #3 specialists', () => {
   let testEnv: TestWorkflowEnvironment;
 
@@ -81,11 +118,10 @@ describe('reviewWorkflow — Issue #3 specialists', () => {
   });
 
   it('runs all three specialists and stores findings in state', async () => {
-    const worker = await Worker.create({
-      connection: testEnv.nativeConnection,
-      taskQueue: 'test-specialists',
-      workflowsPath: path.resolve(__dirname, '../apps/worker/workflows'),
-      activities: {
+    await withWorkers(
+      testEnv,
+      'test-specialists',
+      {
         fetchGitHubPRDiff: mockFetchGitHubPRDiff,
         runIronjaw: mockRunIronjaw,
         runBarnacle: mockRunBarnacle,
@@ -93,34 +129,32 @@ describe('reviewWorkflow — Issue #3 specialists', () => {
         runMutineer: mockMutineer,
         runArbitrator: mockArbitrator,
       },
-    });
+      async () => {
+        const handle = await testEnv.client.workflow.start('reviewWorkflow', {
+          taskQueue: 'test-specialists',
+          workflowId: 'test-specialists-1',
+          args: [{ prUrl: 'https://github.com/acme/backend/pull/42' }],
+        });
 
-    await worker.runUntil(async () => {
-      const handle = await testEnv.client.workflow.start('reviewWorkflow', {
-        taskQueue: 'test-specialists',
-        workflowId: 'test-specialists-1',
-        args: [{ prUrl: 'https://github.com/acme/backend/pull/42' }],
-      });
+        const result = await handle.result();
 
-      const result = await handle.result();
-
-      expect(result.status).toBe('complete');
-      expect(result.specialists.ironjaw.status).toBe('complete');
-      expect(result.specialists.barnacle.status).toBe('complete');
-      expect(result.specialists.greenhand.status).toBe('complete');
-      expect(result.specialists.ironjaw.findings).toHaveLength(1);
-      expect(result.specialists.ironjaw.findings![0].id).toBe('ironjaw-1');
-      expect(result.specialists.barnacle.findings![0].id).toBe('barnacle-1');
-      expect(result.specialists.greenhand.findings![0].id).toBe('greenhand-1');
-    });
-  });
+        expect(result.status).toBe('complete');
+        expect(result.specialists.ironjaw.status).toBe('complete');
+        expect(result.specialists.barnacle.status).toBe('complete');
+        expect(result.specialists.greenhand.status).toBe('complete');
+        expect(result.specialists.ironjaw.findings).toHaveLength(1);
+        expect(result.specialists.ironjaw.findings![0].id).toBe('ironjaw-1');
+        expect(result.specialists.barnacle.findings![0].id).toBe('barnacle-1');
+        expect(result.specialists.greenhand.findings![0].id).toBe('greenhand-1');
+      }
+    );
+  }, 60_000);
 
   it('exposes specialist state via getReviewState query', async () => {
-    const worker = await Worker.create({
-      connection: testEnv.nativeConnection,
-      taskQueue: 'test-specialists-query',
-      workflowsPath: path.resolve(__dirname, '../apps/worker/workflows'),
-      activities: {
+    await withWorkers(
+      testEnv,
+      'test-specialists-query',
+      {
         fetchGitHubPRDiff: mockFetchGitHubPRDiff,
         runIronjaw: mockRunIronjaw,
         runBarnacle: mockRunBarnacle,
@@ -128,36 +162,34 @@ describe('reviewWorkflow — Issue #3 specialists', () => {
         runMutineer: mockMutineer,
         runArbitrator: mockArbitrator,
       },
-    });
+      async () => {
+        const handle = await testEnv.client.workflow.start('reviewWorkflow', {
+          taskQueue: 'test-specialists-query',
+          workflowId: 'test-specialists-query-1',
+          args: [{ prUrl: 'https://github.com/acme/backend/pull/42' }],
+        });
 
-    await worker.runUntil(async () => {
-      const handle = await testEnv.client.workflow.start('reviewWorkflow', {
-        taskQueue: 'test-specialists-query',
-        workflowId: 'test-specialists-query-1',
-        args: [{ prUrl: 'https://github.com/acme/backend/pull/42' }],
-      });
+        await handle.result();
 
-      await handle.result();
-
-      const state = await handle.query('getReviewState') as {
-        specialists: {
-          ironjaw: { status: string };
-          barnacle: { status: string };
-          greenhand: { status: string };
+        const state = await handle.query('getReviewState') as {
+          specialists: {
+            ironjaw: { status: string };
+            barnacle: { status: string };
+            greenhand: { status: string };
+          };
         };
-      };
-      expect(state.specialists.ironjaw.status).toBe('complete');
-      expect(state.specialists.barnacle.status).toBe('complete');
-      expect(state.specialists.greenhand.status).toBe('complete');
-    });
-  });
+        expect(state.specialists.ironjaw.status).toBe('complete');
+        expect(state.specialists.barnacle.status).toBe('complete');
+        expect(state.specialists.greenhand.status).toBe('complete');
+      }
+    );
+  }, 60_000);
 
   it('stores PR diff for specialists and passes context through', async () => {
-    const worker = await Worker.create({
-      connection: testEnv.nativeConnection,
-      taskQueue: 'test-specialists-ctx',
-      workflowsPath: path.resolve(__dirname, '../apps/worker/workflows'),
-      activities: {
+    await withWorkers(
+      testEnv,
+      'test-specialists-ctx',
+      {
         fetchGitHubPRDiff: mockFetchGitHubPRDiff,
         runIronjaw: mockRunIronjaw,
         runBarnacle: mockRunBarnacle,
@@ -165,28 +197,27 @@ describe('reviewWorkflow — Issue #3 specialists', () => {
         runMutineer: mockMutineer,
         runArbitrator: mockArbitrator,
       },
-    });
+      async () => {
+        const handle = await testEnv.client.workflow.start('reviewWorkflow', {
+          taskQueue: 'test-specialists-ctx',
+          workflowId: 'test-specialists-ctx-1',
+          args: [
+            {
+              prUrl: 'https://github.com/acme/backend/pull/42',
+              context: 'security audit',
+            },
+          ],
+        });
 
-    await worker.runUntil(async () => {
-      const handle = await testEnv.client.workflow.start('reviewWorkflow', {
-        taskQueue: 'test-specialists-ctx',
-        workflowId: 'test-specialists-ctx-1',
-        args: [
-          {
-            prUrl: 'https://github.com/acme/backend/pull/42',
-            context: 'security audit',
-          },
-        ],
-      });
-
-      const result = await handle.result();
-      expect(result.status).toBe('complete');
-      expect(result.context).toBe('security audit');
-      // Diff stored from fetchGitHubPRDiff and passed to specialists
-      expect(result.diff).toBe(FIXTURE_DIFF);
-      // All specialists have rawText (they received and processed the diff)
-      expect(result.specialists.ironjaw.partialOutput).toContain('IRONJAW');
-      expect(result.specialists.barnacle.partialOutput).toContain('Barnacle');
-    });
-  });
+        const result = await handle.result();
+        expect(result.status).toBe('complete');
+        expect(result.context).toBe('security audit');
+        // Diff stored from fetchGitHubPRDiff and passed to specialists
+        expect(result.diff).toBe(FIXTURE_DIFF);
+        // All specialists have rawText (they received and processed the diff)
+        expect(result.specialists.ironjaw.partialOutput).toContain('IRONJAW');
+        expect(result.specialists.barnacle.partialOutput).toContain('Barnacle');
+      }
+    );
+  }, 60_000);
 });

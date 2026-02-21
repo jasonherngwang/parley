@@ -105,3 +105,31 @@ Gotchas:
 pnpm typecheck: PASS
 pnpm test: 51/51 PASS
 
+---
+
+Issue #5 — Synthesis, verdict, and run history (COMPLETE, 2026-02-20)
+
+New files:
+- apps/worker/activities/synthesis.ts: runSynthesis activity — receives specialistOutputs (Record<string, Finding[]|null>) + arbitrationOutcomes (Array<{findingId, ruling, reasoning}>). Streams tokens via heartbeat (geminiPro streamText), then calls generateText+Output.object for structured SynthesisVerdict { findings[], summary }. Runs on review-deep task queue.
+- apps/worker/activities/history.ts: writeHistoryRecord activity — inserts completed review into SQLite reviews table. Receives { workflowId, prUrl, prTitle, repoName, prNumber, startedAt, completedAt, verdict }. Runs on fast queue (no taskQueue override).
+- apps/api/app/api/review/history/route.ts: GET /api/review/history?offset=N — returns paginated review summaries (id, workflowId, prUrl, prTitle, repoName, prNumber, startedAt, completedAt, findingCount).
+- apps/api/app/api/review/history/[id]/route.ts: GET /api/review/history/[id] — returns full review record including parsed verdict JSON.
+- tests/synthesis.test.ts: 6 unit tests for runSynthesis (mock ai SDK + @temporalio/activity).
+- tests/reviewWorkflowSynthesis.test.ts: 4 workflow integration tests for synthesis + history.
+
+Changed files:
+- lib/db.ts: added reviews table (CREATE TABLE IF NOT EXISTS) to getDb(). Added insertReview(), getReviewList(), getReviewById() helpers. findingCount computed via json_array_length(json_extract(verdict, '$.findings')).
+- apps/worker/index.ts: now creates TWO workers — fastWorker on review-fast (all activities except synthesis), deepWorker on review-deep (synthesis only). Both run via Promise.all.
+- apps/worker/workflows/reviewWorkflow.ts: added synthesisStatus ('idle'|'running'|'complete'|'failed'), synthesisPartialOutput, verdict to ReviewState. After arbitrations: waits for wf.allHandlersFinished, calls runSynthesis on review-deep via proxyActivities({ taskQueue: 'review-deep' }), then calls writeHistoryRecord. Both wrapped in try/catch — failures are non-fatal.
+- apps/api/app/page.tsx: added SynthesisPanel (streaming text while running, grouped verdict findings on complete), VerdictFindingList (ruling badges + challenge source tags), HistoryModal (paginated list from /api/review/history), PastReviewPanel (static read-only view). Download JSON button on complete reviews.
+- tests/reviewWorkflow.test.ts, reviewWorkflowSpecialists.test.ts, reviewWorkflowChallenge.test.ts: all updated to use withWorkers helper that creates both fast + review-deep workers. Added mockSynthesis and mockWriteHistory to all test workers. Required because workflow now dispatches to review-deep — tests hung without a deep worker registered.
+
+Gotchas:
+- Two-worker test pattern: start deepWorker.run() in background, await fastWorker.runUntil(fn), then deepWorker.shutdown() + await deepRun.catch(() => {}) in finally. This is the correct shutdown sequence for tests.
+- wf.workflowInfo().startTime is deterministic in Temporal (part of workflow execution context) — safe to use for startedAt without worrying about replay non-determinism.
+- wf.condition(wf.allHandlersFinished): must await this before calling synthesis to ensure all signal/update handlers (including submitChallenges) have completed.
+- getReviewList uses json_array_length(json_extract(...)) for findingCount — avoids parsing JSON in TypeScript for a summary-only query.
+
+pnpm typecheck: PASS
+pnpm test: 62/62 PASS
+

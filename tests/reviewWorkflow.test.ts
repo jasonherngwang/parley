@@ -6,6 +6,7 @@ import type { PRDiffResult } from '../apps/worker/activities/fetchGitHubPRDiff';
 import type { SpecialistResult } from '../apps/worker/activities/specialists';
 import type { MutineerResult } from '../apps/worker/activities/mutineer';
 import type { ArbitrationDecision } from '../apps/worker/activities/arbitrator';
+import type { SynthesisVerdict } from '../apps/worker/activities/synthesis';
 
 const FIXTURE_DIFF = `--- a/src/auth.ts
 +++ b/src/auth.ts
@@ -41,6 +42,49 @@ const mockArbitrator = async (): Promise<ArbitrationDecision> => ({
   reasoning: 'Mock arbitration ruling.',
 });
 
+const mockSynthesis = async (): Promise<SynthesisVerdict> => ({
+  findings: [],
+  summary: 'No significant issues.',
+});
+
+const mockWriteHistory = async (): Promise<void> => {};
+
+const WORKFLOWS_PATH = path.resolve(__dirname, '../apps/worker/workflows');
+
+/** Run fn with a fast+deep worker pair, shutting both down when fn completes. */
+async function withWorkers(
+  env: TestWorkflowEnvironment,
+  fastTaskQueue: string,
+  fn: () => Promise<void>
+): Promise<void> {
+  const fastWorker = await Worker.create({
+    connection: env.nativeConnection,
+    taskQueue: fastTaskQueue,
+    workflowsPath: WORKFLOWS_PATH,
+    activities: {
+      fetchGitHubPRDiff: mockFetchGitHubPRDiff,
+      runIronjaw: mockSpecialist,
+      runBarnacle: mockSpecialist,
+      runGreenhand: mockSpecialist,
+      runMutineer: mockMutineer,
+      runArbitrator: mockArbitrator,
+      writeHistoryRecord: mockWriteHistory,
+    },
+  });
+  const deepWorker = await Worker.create({
+    connection: env.nativeConnection,
+    taskQueue: 'review-deep',
+    activities: { runSynthesis: mockSynthesis },
+  });
+  const deepRun = deepWorker.run();
+  try {
+    await fastWorker.runUntil(fn);
+  } finally {
+    deepWorker.shutdown();
+    await deepRun.catch(() => {});
+  }
+}
+
 describe('reviewWorkflow (Issue #2)', () => {
   let testEnv: TestWorkflowEnvironment;
 
@@ -53,21 +97,7 @@ describe('reviewWorkflow (Issue #2)', () => {
   });
 
   it('fetches PR diff and completes with PR metadata in state', async () => {
-    const worker = await Worker.create({
-      connection: testEnv.nativeConnection,
-      taskQueue: 'test-review-pr',
-      workflowsPath: path.resolve(__dirname, '../apps/worker/workflows'),
-      activities: {
-        fetchGitHubPRDiff: mockFetchGitHubPRDiff,
-        runIronjaw: mockSpecialist,
-        runBarnacle: mockSpecialist,
-        runGreenhand: mockSpecialist,
-        runMutineer: mockMutineer,
-        runArbitrator: mockArbitrator,
-      },
-    });
-
-    await worker.runUntil(async () => {
+    await withWorkers(testEnv, 'test-review-pr', async () => {
       const handle = await testEnv.client.workflow.start('reviewWorkflow', {
         taskQueue: 'test-review-pr',
         workflowId: 'test-pr-1',
@@ -89,24 +119,10 @@ describe('reviewWorkflow (Issue #2)', () => {
       expect(result.repoName).toBe('acme/backend');
       expect(result.prNumber).toBe(42);
     });
-  });
+  }, 60_000);
 
   it('stores submitter context in workflow state', async () => {
-    const worker = await Worker.create({
-      connection: testEnv.nativeConnection,
-      taskQueue: 'test-review-pr-ctx',
-      workflowsPath: path.resolve(__dirname, '../apps/worker/workflows'),
-      activities: {
-        fetchGitHubPRDiff: mockFetchGitHubPRDiff,
-        runIronjaw: mockSpecialist,
-        runBarnacle: mockSpecialist,
-        runGreenhand: mockSpecialist,
-        runMutineer: mockMutineer,
-        runArbitrator: mockArbitrator,
-      },
-    });
-
-    await worker.runUntil(async () => {
+    await withWorkers(testEnv, 'test-review-pr-ctx', async () => {
       const handle = await testEnv.client.workflow.start('reviewWorkflow', {
         taskQueue: 'test-review-pr-ctx',
         workflowId: 'test-pr-ctx-1',
@@ -122,24 +138,10 @@ describe('reviewWorkflow (Issue #2)', () => {
       expect(result.status).toBe('complete');
       expect(result.context).toBe('security-critical rewrite');
     });
-  });
+  }, 60_000);
 
   it('can run multiple sequential workflows', async () => {
-    const worker = await Worker.create({
-      connection: testEnv.nativeConnection,
-      taskQueue: 'test-review-pr-seq',
-      workflowsPath: path.resolve(__dirname, '../apps/worker/workflows'),
-      activities: {
-        fetchGitHubPRDiff: mockFetchGitHubPRDiff,
-        runIronjaw: mockSpecialist,
-        runBarnacle: mockSpecialist,
-        runGreenhand: mockSpecialist,
-        runMutineer: mockMutineer,
-        runArbitrator: mockArbitrator,
-      },
-    });
-
-    await worker.runUntil(async () => {
+    await withWorkers(testEnv, 'test-review-pr-seq', async () => {
       const handle1 = await testEnv.client.workflow.start('reviewWorkflow', {
         taskQueue: 'test-review-pr-seq',
         workflowId: 'test-seq-pr-1',
@@ -157,5 +159,5 @@ describe('reviewWorkflow (Issue #2)', () => {
       expect(result2.status).toBe('complete');
       expect(result2.prUrl).toBe('https://github.com/acme/backend/pull/2');
     });
-  });
+  }, 60_000);
 });

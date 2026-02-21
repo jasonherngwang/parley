@@ -23,6 +23,8 @@ type SpecialistStatus =
 
 type MutineerStatus = 'pending' | 'running' | 'complete' | 'failed';
 
+type SynthesisStatus = 'pending' | 'running' | 'complete' | 'failed';
+
 interface Finding {
   id: string;
   severity: 'critical' | 'major' | 'minor';
@@ -52,6 +54,20 @@ interface ArbitrationState {
   challengeSources: Array<'mutineer' | 'human'>;
 }
 
+interface VerdictFinding {
+  severity: 'critical' | 'major' | 'minor';
+  specialist: string;
+  description: string;
+  ruling?: 'upheld' | 'overturned' | 'inconclusive';
+  challengeSources?: Array<'mutineer' | 'human'>;
+  recommendation: string;
+}
+
+interface SynthesisVerdict {
+  findings: VerdictFinding[];
+  summary: string;
+}
+
 interface Specialists {
   ironjaw: SpecialistState;
   barnacle: SpecialistState;
@@ -73,6 +89,9 @@ type RunningState = {
   mutineerPartialOutput?: string;
   mutineerChallenges?: MutineerChallenge[];
   arbitrations?: ArbitrationState[];
+  synthesisStatus?: SynthesisStatus;
+  synthesisPartialOutput?: string;
+  verdict?: SynthesisVerdict;
 };
 type CompleteState = {
   type: 'complete';
@@ -86,6 +105,9 @@ type CompleteState = {
   mutineerStatus?: MutineerStatus;
   mutineerChallenges?: MutineerChallenge[];
   arbitrations?: ArbitrationState[];
+  synthesisStatus?: SynthesisStatus;
+  synthesisPartialOutput?: string;
+  verdict?: SynthesisVerdict;
 };
 type AppState = FloorOpenState | RunningState | CompleteState;
 
@@ -606,6 +628,352 @@ function ArbitrationPanel({
   );
 }
 
+// ── Synthesis Panel ────────────────────────────────────────────────────────────
+
+function verdictRulingBadge(ruling?: VerdictFinding['ruling']) {
+  if (!ruling) return null;
+  const cfg: Record<string, { bg: string; text: string }> = {
+    upheld: { bg: 'bg-red-900 border-red-700', text: 'text-red-300' },
+    overturned: { bg: 'bg-green-900 border-green-700', text: 'text-green-300' },
+    inconclusive: { bg: 'bg-gray-800 border-gray-600', text: 'text-gray-400' },
+  };
+  const s = cfg[ruling] ?? cfg['inconclusive'];
+  return (
+    <span
+      className={`inline-block rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${s.bg} ${s.text}`}
+    >
+      {ruling}
+    </span>
+  );
+}
+
+function SynthesisPanel({
+  status,
+  partialOutput,
+  verdict,
+}: {
+  status: SynthesisStatus;
+  partialOutput?: string;
+  verdict?: SynthesisVerdict;
+}) {
+  const borderColor =
+    status === 'complete'
+      ? 'border-purple-500'
+      : status === 'running'
+        ? 'border-blue-500'
+        : status === 'failed'
+          ? 'border-red-500'
+          : 'border-gray-600';
+
+  const grouped = verdict
+    ? {
+        critical: verdict.findings.filter((f) => f.severity === 'critical'),
+        major: verdict.findings.filter((f) => f.severity === 'major'),
+        minor: verdict.findings.filter((f) => f.severity === 'minor'),
+      }
+    : null;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-gray-500 uppercase tracking-widest">
+        Synthesis
+      </p>
+      <div className={`rounded-xl border-2 p-4 text-xs bg-gray-900 ${borderColor}`}>
+        <div className="flex items-center gap-2 mb-2">
+          {status === 'running' ? (
+            <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+          ) : status === 'complete' ? (
+            <span className="h-2 w-2 rounded-full bg-purple-400" />
+          ) : status === 'failed' ? (
+            <span className="h-2 w-2 rounded-full bg-red-400" />
+          ) : (
+            <span className="h-2 w-2 rounded-full bg-gray-500" />
+          )}
+          <span className="font-bold text-gray-100 uppercase tracking-wide">
+            Synthesis
+          </span>
+          {status === 'complete' && verdict && (
+            <span className="ml-auto text-purple-400 text-[10px]">
+              {verdict.findings.length} finding{verdict.findings.length !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+
+        {status === 'running' && partialOutput && (
+          <div className="rounded bg-gray-800 p-2 max-h-32 overflow-hidden text-gray-300 leading-relaxed mb-2">
+            <span className="line-clamp-6">{partialOutput}</span>
+            <span className="animate-pulse">▋</span>
+          </div>
+        )}
+        {status === 'running' && !partialOutput && (
+          <p className="text-blue-400 italic">Reconciling all findings…</p>
+        )}
+        {status === 'failed' && (
+          <p className="text-red-400 italic">Synthesis failed.</p>
+        )}
+
+        {status === 'complete' && verdict && (
+          <div className="space-y-3">
+            {verdict.summary && (
+              <p className="text-gray-300 leading-relaxed border-l-2 border-purple-700 pl-3">
+                {verdict.summary}
+              </p>
+            )}
+
+            {grouped && grouped.critical.length > 0 && (
+              <div>
+                <p className="text-red-400 text-[10px] uppercase font-semibold mb-1">
+                  Critical
+                </p>
+                <VerdictFindingList findings={grouped.critical} />
+              </div>
+            )}
+            {grouped && grouped.major.length > 0 && (
+              <div>
+                <p className="text-orange-400 text-[10px] uppercase font-semibold mb-1">
+                  Major
+                </p>
+                <VerdictFindingList findings={grouped.major} />
+              </div>
+            )}
+            {grouped && grouped.minor.length > 0 && (
+              <div>
+                <p className="text-yellow-400 text-[10px] uppercase font-semibold mb-1">
+                  Minor
+                </p>
+                <VerdictFindingList findings={grouped.minor} />
+              </div>
+            )}
+            {grouped &&
+              grouped.critical.length === 0 &&
+              grouped.major.length === 0 &&
+              grouped.minor.length === 0 && (
+                <p className="text-gray-500 italic">No findings.</p>
+              )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function VerdictFindingList({ findings }: { findings: VerdictFinding[] }) {
+  return (
+    <ul className="space-y-2">
+      {findings.map((f, i) => (
+        <li key={i} className="rounded-lg bg-gray-800 p-3 space-y-1.5">
+          <div className="flex items-start gap-2 flex-wrap">
+            <span className="text-gray-500 text-[9px] font-mono uppercase">
+              {f.specialist}
+            </span>
+            {verdictRulingBadge(f.ruling)}
+            {f.challengeSources && f.challengeSources.length > 0 && (
+              <div className="flex gap-1">
+                {f.challengeSources.includes('mutineer') && (
+                  <span className="rounded border border-orange-700 bg-orange-900/30 px-1 py-0.5 text-[9px] text-orange-300">
+                    Mutineer
+                  </span>
+                )}
+                {f.challengeSources.includes('human') && (
+                  <span className="rounded border border-blue-700 bg-blue-900/30 px-1 py-0.5 text-[9px] text-blue-300">
+                    Human
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+          <p className="text-gray-300">{f.description}</p>
+          <p className="text-gray-500 text-[10px]">
+            <span className="text-gray-600">Rec:</span> {f.recommendation}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ── History Sidebar ────────────────────────────────────────────────────────────
+
+interface HistorySummary {
+  id: number;
+  prTitle: string;
+  repoName: string;
+  completedAt: string;
+  findingCount: number;
+}
+
+function HistoryModal({
+  onClose,
+  onSelect,
+}: {
+  onClose: () => void;
+  onSelect: (id: number) => void;
+}) {
+  const [items, setItems] = useState<HistorySummary[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/review/history')
+      .then((r) => r.json())
+      .then((data: HistorySummary[]) => {
+        setItems(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+      <div className="w-full max-w-lg rounded-2xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-bold text-gray-100 uppercase tracking-widest">
+            Review History
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-300 transition-colors text-lg leading-none"
+          >
+            ✕
+          </button>
+        </div>
+
+        {loading && <p className="text-gray-500 text-sm">Loading…</p>}
+        {!loading && items.length === 0 && (
+          <p className="text-gray-500 text-sm italic">No reviews yet.</p>
+        )}
+        {!loading && items.length > 0 && (
+          <ul className="space-y-2 max-h-96 overflow-y-auto">
+            {items.map((item) => (
+              <li key={item.id}>
+                <button
+                  onClick={() => {
+                    onSelect(item.id);
+                    onClose();
+                  }}
+                  className="w-full rounded-lg border border-gray-700 bg-gray-800 p-3 text-left hover:border-purple-600 transition-colors"
+                >
+                  <p className="text-gray-200 text-xs font-medium">
+                    {item.prTitle || 'Untitled PR'}
+                  </p>
+                  <div className="flex items-center gap-3 mt-1">
+                    <span className="text-gray-500 text-[10px]">
+                      {item.repoName}
+                    </span>
+                    <span className="text-purple-400 text-[10px]">
+                      {item.findingCount} finding{item.findingCount !== 1 ? 's' : ''}
+                    </span>
+                    <span className="text-gray-600 text-[10px] ml-auto">
+                      {new Date(item.completedAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Past Review Viewer ─────────────────────────────────────────────────────────
+
+interface PastReview {
+  id: number;
+  prUrl: string;
+  prTitle: string;
+  repoName: string;
+  completedAt: string;
+  verdict: SynthesisVerdict;
+}
+
+function PastReviewPanel({
+  review,
+  onClose,
+}: {
+  review: PastReview;
+  onClose: () => void;
+}) {
+  const verdict = review.verdict;
+  const grouped = {
+    critical: verdict.findings.filter((f) => f.severity === 'critical'),
+    major: verdict.findings.filter((f) => f.severity === 'major'),
+    minor: verdict.findings.filter((f) => f.severity === 'minor'),
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([JSON.stringify(review, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `parley-review-${review.id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-6 rounded-xl border border-purple-800/50 bg-gray-900 p-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="h-3 w-3 rounded-full bg-purple-500" />
+          <span className="font-medium text-gray-200">Past Review</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleDownload}
+            className="rounded-lg border border-gray-600 px-3 py-1.5 text-gray-300 text-[11px] hover:border-purple-500 hover:text-purple-400 transition-colors"
+          >
+            Download JSON
+          </button>
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-gray-700 px-3 py-1.5 text-gray-400 text-[11px] hover:border-gray-500 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-lg bg-gray-800 p-4">
+        <p className="text-sm text-gray-400">
+          {review.repoName} —{' '}
+          {new Date(review.completedAt).toLocaleString()}
+        </p>
+        <p className="mt-1 font-medium text-gray-200">{review.prTitle}</p>
+      </div>
+
+      {verdict.summary && (
+        <p className="text-gray-300 text-sm leading-relaxed border-l-2 border-purple-700 pl-3">
+          {verdict.summary}
+        </p>
+      )}
+
+      {(['critical', 'major', 'minor'] as const).map((sev) => {
+        const group = grouped[sev];
+        if (group.length === 0) return null;
+        return (
+          <div key={sev}>
+            <p
+              className={`text-xs uppercase font-semibold mb-2 ${
+                sev === 'critical'
+                  ? 'text-red-400'
+                  : sev === 'major'
+                    ? 'text-orange-400'
+                    : 'text-yellow-400'
+              }`}
+            >
+              {sev}
+            </p>
+            <VerdictFindingList findings={group} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -615,12 +983,15 @@ export default function Home() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [challengesSubmitted, setChallengesSubmitted] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [pastReview, setPastReview] = useState<PastReview | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Reset submitted flag when a new review starts
   useEffect(() => {
     if (state.type === 'floor-open') {
       setChallengesSubmitted(false);
+      setPastReview(null);
     }
   }, [state.type]);
 
@@ -692,6 +1063,29 @@ export default function Home() {
     []
   );
 
+  const handleSelectHistory = useCallback(async (id: number) => {
+    const res = await fetch(`/api/review/history/${id}`);
+    if (res.ok) {
+      const data = await res.json();
+      setPastReview(data as PastReview);
+    }
+  }, []);
+
+  const handleDownloadCurrent = useCallback(
+    (currentState: RunningState | CompleteState) => {
+      const blob = new Blob([JSON.stringify(currentState, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `parley-review-current.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    []
+  );
+
   const showChallengePhase =
     (state.type === 'running' || state.type === 'complete') &&
     (state.windowOpen === true ||
@@ -699,15 +1093,43 @@ export default function Home() {
       (state.mutineerStatus && state.mutineerStatus !== 'pending') ||
       (state.arbitrations && state.arbitrations.length > 0));
 
+  const showSynthesisPhase =
+    (state.type === 'running' || state.type === 'complete') &&
+    state.synthesisStatus &&
+    state.synthesisStatus !== 'pending';
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-8">
+      {showHistory && (
+        <HistoryModal
+          onClose={() => setShowHistory(false)}
+          onSelect={handleSelectHistory}
+        />
+      )}
+
       <div className="w-full max-w-4xl space-y-8">
-        <header className="text-center">
-          <h1 className="text-4xl font-bold tracking-tight">Parley</h1>
-          <p className="mt-2 text-gray-400">Adversarial Code Review</p>
+        <header className="flex items-center justify-between">
+          <div>
+            <h1 className="text-4xl font-bold tracking-tight">Parley</h1>
+            <p className="mt-1 text-gray-400">Adversarial Code Review</p>
+          </div>
+          <button
+            onClick={() => setShowHistory(true)}
+            className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-400 hover:border-gray-500 hover:text-gray-200 transition-colors"
+          >
+            History
+          </button>
         </header>
 
-        {state.type === 'floor-open' && (
+        {/* Past review viewer */}
+        {pastReview && state.type === 'floor-open' && (
+          <PastReviewPanel
+            review={pastReview}
+            onClose={() => setPastReview(null)}
+          />
+        )}
+
+        {state.type === 'floor-open' && !pastReview && (
           <div className="space-y-4 rounded-xl border border-gray-800 bg-gray-900 p-6">
             <p className="text-sm text-gray-400">
               The floor is open. Submit a GitHub PR URL to start a review.
@@ -751,17 +1173,27 @@ export default function Home() {
             }`}
           >
             {/* Header */}
-            <div className="flex items-center gap-3">
-              {state.type === 'running' ? (
-                <div className="h-3 w-3 animate-pulse rounded-full bg-blue-500" />
-              ) : (
-                <div className="h-3 w-3 rounded-full bg-green-500" />
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {state.type === 'running' ? (
+                  <div className="h-3 w-3 animate-pulse rounded-full bg-blue-500" />
+                ) : (
+                  <div className="h-3 w-3 rounded-full bg-green-500" />
+                )}
+                <span className="font-medium">
+                  {state.type === 'running'
+                    ? 'Review Running'
+                    : 'Review Complete'}
+                </span>
+              </div>
+              {state.type === 'complete' && (
+                <button
+                  onClick={() => handleDownloadCurrent(state)}
+                  className="rounded-lg border border-gray-600 px-3 py-1.5 text-gray-300 text-[11px] hover:border-purple-500 hover:text-purple-400 transition-colors"
+                >
+                  Download JSON
+                </button>
               )}
-              <span className="font-medium">
-                {state.type === 'running'
-                  ? 'Review Running'
-                  : 'Review Complete'}
-              </span>
             </div>
 
             {/* PR metadata */}
@@ -826,7 +1258,16 @@ export default function Home() {
               </>
             )}
 
-            {state.type === 'complete' && (
+            {/* Synthesis phase */}
+            {showSynthesisPhase && (
+              <SynthesisPanel
+                status={state.synthesisStatus ?? 'pending'}
+                partialOutput={state.synthesisPartialOutput}
+                verdict={state.verdict}
+              />
+            )}
+
+            {state.type === 'complete' && !showSynthesisPhase && (
               <p className="text-sm text-green-400">
                 Done. The floor will reopen shortly.
               </p>
