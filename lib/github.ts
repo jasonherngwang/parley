@@ -36,6 +36,9 @@ export async function fetchPRFiles(
     Accept: 'application/vnd.github.v3+json',
     'User-Agent': 'parley-code-review/1.0',
   };
+  if (process.env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
 
   const [prResponse, filesResponse] = await Promise.all([
     fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {

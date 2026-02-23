@@ -1,7 +1,13 @@
 /.claude
 /docs
+/deploy
+/scripts
 /node_modules
 apps/api/.next
 apps/api/node_modules
 apps/worker/node_modules
 **/*.tsbuildinfo
+.env
+*.d
+*.d-shm
+*.d-wal

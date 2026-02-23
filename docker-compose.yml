@@ -25,10 +25,12 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        temporal-sql-tool --db postgres12 -ep postgresql -u temporal -pw temporal --pl 5432 setup-schema -v 0.0
-        temporal-sql-tool --db postgres12 -ep postgresql -u temporal -pw temporal --pl 5432 update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
-        temporal-sql-tool --db postgres12 -ep postgresql -u temporal -pw temporal --pl 5432 --database temporal_visibility setup-schema -v 0.0
-        temporal-sql-tool --db postgres12 -ep postgresql -u temporal -pw temporal --pl 5432 --database temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw temporal --db temporal create-database
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw temporal --db temporal setup-schema -v 0.0
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw temporal --db temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw temporal --db temporal_visibility create-database
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw temporal --db temporal_visibility setup-schema -v 0.0
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw temporal --db temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
     networks:
       - temporal-network
 
@@ -53,6 +55,18 @@ services:
       start_period: 30s
     networks:
       - temporal-network
+
+  temporal-namespace-setup:
+    image: temporalio/admin-tools:1.29.1-tctl-1.18.4-cli-1.5.0
+    depends_on:
+      temporal:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - tctl --address temporal:7233 namespace register --retention 7 default
+    networks:
+      - temporal-network
+    restart: "no"
 
   temporal-ui:
     image: temporalio/ui:2.34.0
