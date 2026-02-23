@@ -17,12 +17,23 @@ interface PRNodeData {
   [key: string]: unknown;
 }
 
+const SAMPLE_PRS = [
+  { label: 'ghostty #9709', url: 'https://github.com/ghostty-org/ghostty/pull/9709' },
+  { label: 'cf/agents #391', url: 'https://github.com/cloudflare/agents/pull/391' },
+  { label: 'pydantic-ai #528', url: 'https://github.com/pydantic/pydantic-ai/pull/528' },
+];
+
 export function PRNode({ data }: { data: PRNodeData }) {
   const { stateType, title, repoName, prNumber, prUrl, onSubmit, fetchError: workflowError } = data;
   const [inputUrl, setInputUrl] = useState('');
   const [context, setContext] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleSample = (url: string) => {
+    setInputUrl(url);
+    setError(null);
+  };
 
   const isIdle = stateType === 'floor-open';
   const isRunning = stateType === 'running';
@@ -120,6 +131,19 @@ export function PRNode({ data }: { data: PRNodeData }) {
               if (e.key === 'Enter') handleSubmit();
             }}
           />
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-text-ghost" style={{ fontFamily: 'var(--font-body)' }}>try:</span>
+            {SAMPLE_PRS.map((pr) => (
+              <button
+                key={pr.url}
+                onClick={() => handleSample(pr.url)}
+                className="text-[11px] text-text-tertiary hover:text-accent transition-colors"
+                style={{ fontFamily: 'var(--font-mono)' }}
+              >
+                {pr.label}
+              </button>
+            ))}
+          </div>
           <textarea
             className="w-full rounded-lg border border-border-default bg-surface-2 p-3 text-[13px] text-text-primary placeholder-text-ghost focus:border-accent/60 focus:outline-none focus:ring-1 focus:ring-accent/30 resize-none transition-colors"
             style={{ fontFamily: 'var(--font-body)' }}

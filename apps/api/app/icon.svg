@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Background -->
+  <rect width="32" height="32" fill="#0B0906"/>
+
+  <!-- Skull: cranium -->
+  <circle cx="16" cy="12" r="8" fill="#F0E4C8"/>
+
+  <!-- Jaw -->
+  <rect x="10" y="17" width="12" height="5" rx="2" fill="#F0E4C8"/>
+
+  <!-- Tooth gaps -->
+  <rect x="12.5" y="19" width="2" height="3" rx="0.5" fill="#0B0906"/>
+  <rect x="17.5" y="19" width="2" height="3" rx="0.5" fill="#0B0906"/>
+
+  <!-- Eye sockets -->
+  <ellipse cx="12.5" cy="11" rx="2.8" ry="2.8" fill="#0B0906"/>
+  <ellipse cx="19.5" cy="11" rx="2.8" ry="2.8" fill="#0B0906"/>
+
+  <!-- Nose cavity -->
+  <polygon points="16,14 14.5,16 17.5,16" fill="#0B0906"/>
+
+  <!-- Crossed bones -->
+  <line x1="5" y1="29" x2="27" y2="23" stroke="#F0E4C8" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="5" y1="23" x2="27" y2="29" stroke="#F0E4C8" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- Bone-end knobs -->
+  <circle cx="5"  cy="29" r="2.5" fill="#F0E4C8"/>
+  <circle cx="27" cy="29" r="2.5" fill="#F0E4C8"/>
+  <circle cx="5"  cy="23" r="2.5" fill="#F0E4C8"/>
+  <circle cx="27" cy="23" r="2.5" fill="#F0E4C8"/>
+</svg>
