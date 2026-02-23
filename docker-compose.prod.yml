@@ -29,12 +29,12 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${TEMPORAL_DB_PASSWORD} --db temporal create-database || true
-        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${TEMPORAL_DB_PASSWORD} --db temporal setup-schema -v 0.0 || true
-        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${TEMPORAL_DB_PASSWORD} --db temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
-        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${TEMPORAL_DB_PASSWORD} --db temporal_visibility create-database || true
-        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${TEMPORAL_DB_PASSWORD} --db temporal_visibility setup-schema -v 0.0 || true
-        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${TEMPORAL_DB_PASSWORD} --db temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${POSTGRES_PWD} --db temporal create-database || true
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${POSTGRES_PWD} --db temporal setup-schema -v 0.0 || true
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${POSTGRES_PWD} --db temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${POSTGRES_PWD} --db temporal_visibility create-database || true
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${POSTGRES_PWD} --db temporal_visibility setup-schema -v 0.0 || true
+        temporal-sql-tool --pl postgres12 -p 5432 -ep postgresql -u temporal --pw $${POSTGRES_PWD} --db temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
     networks:
       - parley-internal
 
