@@ -1,20 +1,33 @@
-# Parrrley
+# Parley 🏴‍☠️
 
-Live visualization of a Temporal workflow - Adversarial AI code review by a crew of pirates
+Live visualization of a Temporal workflow - Adversarial AI code review by a crew of pirates. I wanted to experiment with durable workflow orchestration involving human intervention.
 
-1. Submit a public GitHub PR URL.
+1. Provide a public GitHub PR URL.
+
 2. Three specialized mates review the diff in parallel:
    - **Ironjaw** — security researcher
    - **Barnacle** — complexity skeptic
    - **Greenhand** — enthusiastic junior
-3. Each finding spawns a child workflow. Inside it, **the Mutineer** decides whether to arrrgue with the finding.
-4. A 10-minute human window opens. You can challenge any finding via per-finding text inputs.
-5. Each child's **Arbiter** weighs all challenges (mutineer + human) and produces a final recommendation.
-6. Synthesis reconciles everything into an overall assessment with specific action items.
 
-Click **ⓘ** for more info about each node.
+3. Each finding spawns a child workflow. Within each, **parley**:
+
+   3a. **Mutineer** may arrrgue or agree with the finding.
+
+   3b. A 10-minute window is opened for human review input, after which we auto-proceed. The timer can be extended.
+
+   3c. **Arbiter** weighs all challenges (mutineer + human) and produces a final recommendation.
+
+4. Synthesis reconciles everything into an overall assessment with specific action items.
+
+Click **ⓘ** for more info about each node's Temporal settings.
+
+![Input — submit a PR URL to start a review](/screenshots/input.png)
+
+![Synthesis — final verdict with per-finding rulings](/screenshots/synthesis.png)
 
 ## Workflow
+
+Each specialist runs inside a cancellation scope (45 s timeout) and heartbeats on every streamed chunk. The human review window is a durable timer, extendable via signal. Submitting challenges uses an Update handler — a synchronous, validated command that returns a value. Every activity is wrapped in a retry policy with exponential backoff.
 
 ```
 reviewWorkflow
@@ -61,5 +74,3 @@ reviewWorkflow
                    │
               [Synthesis]
 ```
-
-Each specialist runs inside a cancellation scope (45 s timeout) and heartbeats on every streamed chunk. The human review window is a durable timer, extendable via signal. Submitting challenges uses an Update handler — a synchronous, validated command that returns a value. Every activity is wrapped in a retry policy with exponential backoff.

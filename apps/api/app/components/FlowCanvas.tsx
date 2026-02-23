@@ -688,7 +688,10 @@ export function FlowCanvas({
     }
   }, [state.type]);
 
-  const displayState = pastReview ? pastReviewToState(pastReview) : state;
+  const displayState = useMemo(
+    () => (pastReview ? pastReviewToState(pastReview) : state),
+    [pastReview, state],
+  );
 
   const { nodes: computedNodes, edges } = useMemo(
     () =>
