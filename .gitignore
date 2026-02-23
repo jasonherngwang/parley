@@ -11,3 +11,4 @@ apps/worker/node_modules
 *.d
 *.d-shm
 *.d-wal
+.DS_Store

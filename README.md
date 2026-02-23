@@ -21,9 +21,9 @@ Live visualization of a Temporal workflow - Adversarial AI code review by a crew
 
 Click **ⓘ** for more info about each node's Temporal settings.
 
-![Input — submit a PR URL to start a review](/screenshots/input.png)
+![Input — submit a PR URL to start a review](/screenshots/input.jpg)
 
-![Synthesis — final verdict with per-finding rulings](/screenshots/synthesis.png)
+![Synthesis — final verdict with per-finding rulings](/screenshots/synthesis.jpg)
 
 ## Workflow
 
