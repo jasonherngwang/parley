@@ -1,13 +1,18 @@
 import * as wf from '@temporalio/workflow';
 import type * as fetchActivities from '../activities/fetchGitHubPRDiff';
+import type { PRDiffResult } from '../activities/fetchGitHubPRDiff';
 import type * as specialistActivities from '../activities/specialists';
-import type * as mutineerActivities from '../activities/mutineer';
-import type * as arbitratorActivities from '../activities/arbitrator';
 import type * as synthesisActivities from '../activities/synthesis';
 import type * as historyActivities from '../activities/history';
 import type { Finding, SpecialistResult } from '../activities/specialists';
-import type { MutineerChallenge } from '../activities/mutineer';
 import type { SynthesisVerdict } from '../activities/synthesis';
+import {
+  findingWorkflow,
+  provideHumanInput,
+  reportMutineerResult,
+  type FindingWorkflowInput,
+  type FindingWorkflowResult,
+} from './findingWorkflow';
 
 const { fetchGitHubPRDiff } = wf.proxyActivities<typeof fetchActivities>({
   startToCloseTimeout: '45s',
@@ -29,29 +34,10 @@ const { runIronjaw, runBarnacle, runGreenhand } =
     },
   });
 
-const { runMutineer } = wf.proxyActivities<typeof mutineerActivities>({
-  startToCloseTimeout: '90s',
-  heartbeatTimeout: '15s',
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: '2s',
-    backoffCoefficient: 2,
-  },
-});
-
-const { runArbitrator } = wf.proxyActivities<typeof arbitratorActivities>({
-  startToCloseTimeout: '30s',
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: '2s',
-    backoffCoefficient: 2,
-  },
-});
-
 const { runSynthesis } = wf.proxyActivities<typeof synthesisActivities>({
   taskQueue: 'review-deep',
   startToCloseTimeout: '3 minutes',
-  heartbeatTimeout: '30s',
+  heartbeatTimeout: '60s',
   retry: {
     maximumAttempts: 2,
     initialInterval: '5s',
@@ -70,26 +56,52 @@ export type SpecialistStatus =
   | 'pending'
   | 'running'
   | 'complete'
-  | 'timed-out'
   | 'failed';
-
-export type MutineerStatus = 'pending' | 'running' | 'complete' | 'failed';
 
 export type SynthesisStatus = 'pending' | 'running' | 'complete' | 'failed';
 
 export interface SpecialistState {
   status: SpecialistStatus;
-  attemptNumber: number;
   partialOutput?: string;
   findings: Finding[] | null;
 }
 
-export interface ArbitrationState {
+export interface FindingLifecycle {
   findingId: string;
-  status: 'pending' | 'running' | 'complete';
-  ruling?: 'upheld' | 'overturned' | 'inconclusive';
+  specialist: string;
+  severity: 'critical' | 'major' | 'minor';
+  description: string;
+  recommendation: string;
+  childWorkflowId: string;
+  childStatus: 'started' | 'complete' | 'failed';
+  mutineerChallenge?: string | null;
+  mutineerVerdict?: 'agree' | 'disagree' | 'partial';
+  mutineerFailed?: boolean;
+  humanChallenge?: string | null;
+  ruling?: 'upheld' | 'overturned' | 'accepted';
   reasoning?: string;
-  challengeSources: Array<'mutineer' | 'human'>;
+  arbiterMutineerStance?: 'agrees' | 'disagrees' | 'mixed';
+  arbiterHumanStance?: 'agrees' | 'disagrees' | 'mixed';
+}
+
+export interface PhaseTiming {
+  fetchStartedAt?: string;
+  specialistsStartedAt?: string;
+  specialistsCompletedAt?: string;
+  findingsStartedAt?: string;
+  findingsCompletedAt?: string;
+  synthesisStartedAt?: string;
+  completedAt?: string;
+}
+
+export interface TemporalMeta {
+  workflowId: string;
+  runId: string;
+  taskQueue: string;
+  historyLength: number;
+  startedAt: string;
+  continueAsNewCount: number;
+  phaseTiming: PhaseTiming;
 }
 
 export interface ReviewState {
@@ -100,23 +112,24 @@ export interface ReviewState {
   repoName?: string;
   prNumber?: number;
   diff?: string;
+  fetchError?: string;
   specialists: {
     ironjaw: SpecialistState;
     barnacle: SpecialistState;
     greenhand: SpecialistState;
   };
-  // Phase 2: challenge window
+  // Phase 2: child workflows per finding
+  findings: FindingLifecycle[];
+  // Human window (shared timer, runs in parent)
   windowOpen: boolean;
   secondsRemaining: number;
   humanChallenges: Record<string, string>;
-  mutineerStatus: MutineerStatus;
-  mutineerPartialOutput?: string;
-  mutineerChallenges: MutineerChallenge[];
-  arbitrations: ArbitrationState[];
   // Phase 3: synthesis
   synthesisStatus: SynthesisStatus;
   synthesisPartialOutput?: string;
   verdict?: SynthesisVerdict;
+  // Temporal metadata for demo/educational UI
+  temporal: TemporalMeta;
 }
 
 // Signals and updates
@@ -130,31 +143,29 @@ export const getReviewState = wf.defineQuery<ReviewState>('getReviewState');
 
 const defaultSpecialistState = (): SpecialistState => ({
   status: 'pending',
-  attemptNumber: 0,
   findings: null,
 });
 
-function findFindingById(
-  findingId: string,
-  specialists: ReviewState['specialists']
-): Finding | undefined {
-  for (const s of Object.values(specialists)) {
-    if (s.findings) {
-      const found = s.findings.find((f) => f.id === findingId);
-      if (found) return found;
-    }
-  }
-  return undefined;
-}
-
-// Tick size for the countdown loop (seconds).
-// 600 = single tick for 10-minute window → fewest workflow tasks → fastest tests.
-const WINDOW_TICK_S = 600;
-
-const TERMINAL: Set<string> = new Set(['complete', 'timed-out', 'failed']);
+const TERMINAL: Set<string> = new Set(['complete', 'failed']);
 
 // Continue-As-New threshold. History length > this triggers a new execution.
 const CAN_THRESHOLD = 10_000;
+
+/** Snapshot Temporal runtime metadata and optionally merge phase timing. */
+function refreshTemporal(
+  current: TemporalMeta,
+  phaseUpdate?: Partial<PhaseTiming>
+): TemporalMeta {
+  const info = wf.workflowInfo();
+  return {
+    ...current,
+    runId: info.runId,
+    historyLength: info.historyLength,
+    phaseTiming: phaseUpdate
+      ? { ...current.phaseTiming, ...phaseUpdate }
+      : current.phaseTiming,
+  };
+}
 
 export async function reviewWorkflow(args: {
   prUrl: string;
@@ -162,34 +173,75 @@ export async function reviewWorkflow(args: {
   // Populated when this execution was started by a Continue-As-New call.
   _resumeState?: ReviewState;
 }): Promise<ReviewState> {
-  // Initialize state from a prior execution (Continue-As-New) or fresh.
-  let state: ReviewState = args._resumeState ?? {
-    status: 'running',
-    prUrl: args.prUrl,
-    context: args.context,
-    specialists: {
-      ironjaw: defaultSpecialistState(),
-      barnacle: defaultSpecialistState(),
-      greenhand: defaultSpecialistState(),
-    },
-    windowOpen: false,
-    secondsRemaining: 0,
-    humanChallenges: {},
-    mutineerStatus: 'pending',
-    mutineerChallenges: [],
-    arbitrations: [],
-    synthesisStatus: 'pending',
-  };
+  const info = wf.workflowInfo();
 
-  wf.setHandler(getReviewState, () => state);
+  // Initialize state from a prior execution (Continue-As-New) or fresh.
+  let state: ReviewState = args._resumeState
+    ? {
+        ...args._resumeState,
+        // Refresh runId and historyLength for the new execution
+        temporal: {
+          ...args._resumeState.temporal,
+          runId: info.runId,
+          historyLength: info.historyLength,
+        },
+      }
+    : {
+        status: 'running',
+        prUrl: args.prUrl,
+        context: args.context,
+        specialists: {
+          ironjaw: defaultSpecialistState(),
+          barnacle: defaultSpecialistState(),
+          greenhand: defaultSpecialistState(),
+        },
+        findings: [],
+        windowOpen: false,
+        secondsRemaining: 0,
+        humanChallenges: {},
+        synthesisStatus: 'pending',
+        temporal: {
+          workflowId: info.workflowId,
+          runId: info.runId,
+          taskQueue: info.taskQueue,
+          historyLength: info.historyLength,
+          startedAt: info.startTime.toISOString(),
+          continueAsNewCount: 0,
+          phaseTiming: {},
+        },
+      };
+
+  // Deadline-based timer: tracks when the window expires so that extend
+  // correctly adds 2 min to the *current* remaining time, not the original.
+  let windowDeadlineMs = 0;
+
+  wf.setHandler(getReviewState, () => ({
+    ...state,
+    secondsRemaining: state.windowOpen
+      ? Math.max(0, Math.ceil((windowDeadlineMs - Date.now()) / 1000))
+      : state.secondsRemaining,
+  }));
 
   // Register Signal + Update handlers early so they're never missed.
 
   // Signal: extend window by 2 minutes (no-op if window not open)
   wf.setHandler(extendReviewWindow, () => {
     if (state.windowOpen) {
-      state = { ...state, secondsRemaining: state.secondsRemaining + 120 };
+      windowDeadlineMs += 120_000;
     }
+  });
+
+  // Signal from child workflows: mutineer completed for a specific finding.
+  // Updates parent state so the UI shows mutineer results in real time.
+  wf.setHandler(reportMutineerResult, (findingId: string, challenge: string | null, verdict: 'agree' | 'disagree' | 'partial', failed?: boolean) => {
+    state = {
+      ...state,
+      findings: state.findings.map((f) =>
+        f.findingId === findingId
+          ? { ...f, mutineerChallenge: challenge, mutineerVerdict: verdict, mutineerFailed: failed ?? false }
+          : f
+      ),
+    };
   });
 
   // Update: submit human challenges.
@@ -209,10 +261,24 @@ export async function reviewWorkflow(args: {
 
   // ── Step 1: Fetch PR diff (skip if already fetched) ────────────────────────
   if (!state.diff) {
-    const prResult = await fetchGitHubPRDiff({
-      prUrl: args.prUrl,
-      context: args.context,
-    });
+    state = {
+      ...state,
+      temporal: refreshTemporal(state.temporal, {
+        fetchStartedAt: new Date().toISOString(),
+      }),
+    };
+
+    let prResult: PRDiffResult;
+    try {
+      prResult = await fetchGitHubPRDiff({
+        prUrl: args.prUrl,
+        context: args.context,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      state = { ...state, status: 'complete', fetchError: message };
+      return state;
+    }
 
     state = {
       ...state,
@@ -225,6 +291,9 @@ export async function reviewWorkflow(args: {
         barnacle: { ...state.specialists.barnacle, status: 'running' },
         greenhand: { ...state.specialists.greenhand, status: 'running' },
       },
+      temporal: refreshTemporal(state.temporal, {
+        specialistsStartedAt: new Date().toISOString(),
+      }),
     };
   }
 
@@ -237,71 +306,59 @@ export async function reviewWorkflow(args: {
     );
 
   if (!specialistsDone()) {
-    async function runWithTimeout(
+    async function runSpecialist(
       name: 'ironjaw' | 'barnacle' | 'greenhand',
-      run: () => Promise<SpecialistResult>
+      run: () => Promise<SpecialistResult>,
     ): Promise<void> {
+      state = {
+        ...state,
+        specialists: { ...state.specialists, [name]: { ...state.specialists[name], status: 'running' } },
+      };
       try {
-        await wf.CancellationScope.withTimeout(45_000, async () => {
-          const result = await run();
-          state = {
-            ...state,
-            specialists: {
-              ...state.specialists,
-              [name]: {
-                status: 'complete',
-                attemptNumber: state.specialists[name].attemptNumber,
-                partialOutput: result.rawText,
-                findings: result.findings,
-              },
-            },
-          };
-        });
-      } catch (err) {
-        if (wf.isCancellation(err)) {
-          state = {
-            ...state,
-            specialists: {
-              ...state.specialists,
-              [name]: {
-                ...state.specialists[name],
-                status: 'timed-out',
-                findings: null,
-              },
-            },
-          };
-        } else {
-          state = {
-            ...state,
-            specialists: {
-              ...state.specialists,
-              [name]: {
-                ...state.specialists[name],
-                status: 'failed',
-                findings: null,
-              },
-            },
-          };
-        }
+        const result = await run();
+        state = {
+          ...state,
+          specialists: {
+            ...state.specialists,
+            [name]: { status: 'complete', partialOutput: result.rawText, findings: result.findings },
+          },
+        };
+      } catch {
+        state = {
+          ...state,
+          specialists: { ...state.specialists, [name]: { status: 'failed', findings: null } },
+        };
       }
     }
 
     // Only dispatch specialists that are still in a non-terminal state.
     const tasks: Promise<void>[] = [];
     if (!TERMINAL.has(state.specialists.ironjaw.status))
-      tasks.push(runWithTimeout('ironjaw', () => runIronjaw(specialistArgs)));
+      tasks.push(runSpecialist('ironjaw', () => runIronjaw(specialistArgs)));
     if (!TERMINAL.has(state.specialists.barnacle.status))
-      tasks.push(runWithTimeout('barnacle', () => runBarnacle(specialistArgs)));
+      tasks.push(runSpecialist('barnacle', () => runBarnacle(specialistArgs)));
     if (!TERMINAL.has(state.specialists.greenhand.status))
-      tasks.push(
-        runWithTimeout('greenhand', () => runGreenhand(specialistArgs))
-      );
+      tasks.push(runSpecialist('greenhand', () => runGreenhand(specialistArgs)));
 
     await Promise.all(tasks);
   }
 
-  // ── Continue-As-New checkpoint 1 (post-specialists) ────────────────────────
+  state = {
+    ...state,
+    temporal: refreshTemporal(state.temporal, {
+      specialistsCompletedAt: new Date().toISOString(),
+    }),
+  };
+
+  // ── Continue-As-New checkpoint 1 (post-specialists, before spawning children)
   if (wf.workflowInfo().historyLength > CAN_THRESHOLD) {
+    state = {
+      ...state,
+      temporal: {
+        ...state.temporal,
+        continueAsNewCount: state.temporal.continueAsNewCount + 1,
+      },
+    };
     await wf.continueAsNew<typeof reviewWorkflow>({
       prUrl: args.prUrl,
       context: args.context,
@@ -309,114 +366,177 @@ export async function reviewWorkflow(args: {
     });
   }
 
-  // ── Step 3: Challenge window + Mutineer in parallel (Join Gate 2) ──────────
-  const challengePhaseDone = () =>
-    !state.windowOpen && TERMINAL.has(state.mutineerStatus);
+  // ── Step 3: Spawn child workflows (one per finding) ────────────────────────
+  // Flatten all findings from all specialists, limiting to top 2 per specialist
+  const SEVERITY_RANK: Record<string, number> = { critical: 0, major: 1, minor: 2 };
+  const MAX_FINDINGS_PER_SPECIALIST = 2;
 
-  if (!challengePhaseDone()) {
-    // (Re-)initialize challenge window if it hasn't been opened yet.
-    if (state.mutineerStatus === 'pending') {
+  const allFindings: Array<{ specialist: string; finding: Finding }> = [];
+  for (const [name, spec] of Object.entries(state.specialists)) {
+    if (spec.findings && spec.findings.length > 0) {
+      const sorted = [...spec.findings].sort(
+        (a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9),
+      );
+      for (const f of sorted.slice(0, MAX_FINDINGS_PER_SPECIALIST)) {
+        allFindings.push({ specialist: name, finding: f });
+      }
+    }
+  }
+
+  // Only spawn children if findings phase hasn't completed yet
+  const findingsAlreadyDone = state.findings.length > 0 &&
+    state.findings.every((f) => f.childStatus === 'complete' || f.childStatus === 'failed');
+
+  if (allFindings.length > 0 && !findingsAlreadyDone) {
+    const wfId = wf.workflowInfo().workflowId;
+
+    // Initialize findings in state
+    state = {
+      ...state,
+      findings: allFindings.map(({ specialist, finding }) => ({
+        findingId: finding.id,
+        specialist,
+        severity: finding.severity,
+        description: finding.description,
+        recommendation: finding.recommendation,
+        childWorkflowId: `${wfId}-${finding.id}`,
+        childStatus: 'started',
+      })),
+      temporal: refreshTemporal(state.temporal, {
+        findingsStartedAt: new Date().toISOString(),
+      }),
+    };
+
+    // Spawn all child workflows
+    let childHandles: Awaited<ReturnType<typeof wf.startChild>>[];
+    try {
+      childHandles = await Promise.all(
+        allFindings.map(({ specialist, finding }) => {
+          const childInput: FindingWorkflowInput = {
+            findingId: finding.id,
+            specialist,
+            severity: finding.severity,
+            description: finding.description,
+            recommendation: finding.recommendation,
+            diff: state.diff!,
+            context: args.context,
+            parentWorkflowId: wfId,
+          };
+          return wf.startChild(findingWorkflow, {
+            workflowId: `${wfId}-${finding.id}`,
+            args: [childInput],
+          });
+        })
+      );
+    } catch {
+      // Mark all findings as failed if child spawning fails
+      state = {
+        ...state,
+        findings: state.findings.map((f) => ({ ...f, childStatus: 'failed' as const })),
+      };
+      childHandles = [];
+    }
+
+    // ── Step 4: Human window (concurrent with child mutineer work) ─────────
+    // Open the window if it hasn't been opened yet
+    if (!state.windowOpen && state.secondsRemaining === 0) {
+      windowDeadlineMs = Date.now() + 600_000;
       state = {
         ...state,
         windowOpen: true,
         secondsRemaining: 600,
-        mutineerStatus: 'running',
       };
     }
 
-    // Build allFindings for Mutineer
-    const allFindings: Record<string, Finding[]> = {
-      ironjaw: state.specialists.ironjaw.findings ?? [],
-      barnacle: state.specialists.barnacle.findings ?? [],
-      greenhand: state.specialists.greenhand.findings ?? [],
-    };
-
-    // Countdown — resolves when window closes or timer expires
+    // Countdown — resolves when window closes or deadline passes
     const runWindow = async (): Promise<void> => {
-      while (state.windowOpen && state.secondsRemaining > 0) {
-        const tick = Math.min(state.secondsRemaining, WINDOW_TICK_S);
+      while (state.windowOpen && windowDeadlineMs > Date.now()) {
+        const remainingMs = windowDeadlineMs - Date.now();
         const closed = await wf.condition(
           () => !state.windowOpen,
-          tick * 1000
+          remainingMs,
         );
         if (closed) break;
-        state = {
-          ...state,
-          secondsRemaining: Math.max(0, state.secondsRemaining - tick),
-        };
       }
-      state = { ...state, windowOpen: false };
+      state = { ...state, windowOpen: false, secondsRemaining: 0 };
     };
 
-    // Only run Mutineer if it hasn't completed yet.
-    type MutineerPromise = Promise<void>;
-    let mutineerPromise: MutineerPromise;
-    if (TERMINAL.has(state.mutineerStatus)) {
-      mutineerPromise = Promise.resolve();
-    } else {
-      mutineerPromise = runMutineer({ allFindings, capPerSpecialist: 3 })
-        .then((result) => {
+    await runWindow();
+
+    // ── Step 5: Signal all children with human input ─────────────────────
+    for (let i = 0; i < childHandles.length; i++) {
+      const findingId = allFindings[i].finding.id;
+      const humanChallenge = state.humanChallenges[findingId] ?? null;
+      await childHandles[i].signal(provideHumanInput, humanChallenge);
+    }
+
+    // ── Step 6: Await all children ──────────────────────────────────────
+    const results = await Promise.all(
+      childHandles.map(async (handle, i): Promise<FindingWorkflowResult | null> => {
+        try {
+          return await handle.result();
+        } catch {
+          // Mark as failed in state
+          const findingId = allFindings[i].finding.id;
           state = {
             ...state,
-            mutineerStatus: 'complete',
-            mutineerChallenges: result.challenges,
+            findings: state.findings.map((f) =>
+              f.findingId === findingId
+                ? { ...f, childStatus: 'failed' as const }
+                : f
+            ),
           };
-        })
-        .catch(() => {
-          state = { ...state, mutineerStatus: 'failed' };
-        });
-    }
+          return null;
+        }
+      })
+    );
 
-    await Promise.all([mutineerPromise, runWindow()]);
-  }
-
-  // ── Build arbitration slots (first-time or empty after resume) ─────────────
-  // Done here (before CAN checkpoint 2) so the resumed execution can directly
-  // dispatch pending arbitrators without rebuilding the merged map.
-  if (state.arbitrations.length === 0) {
-    const mergedMap = new Map<
-      string,
-      { findingId: string; sources: Array<'mutineer' | 'human'> }
-    >();
-
-    for (const c of state.mutineerChallenges) {
-      if (!findFindingById(c.findingId, state.specialists)) continue;
-      if (!mergedMap.has(c.findingId)) {
-        mergedMap.set(c.findingId, {
-          findingId: c.findingId,
-          sources: ['mutineer'],
-        });
-      } else {
-        const entry = mergedMap.get(c.findingId)!;
-        if (!entry.sources.includes('mutineer')) entry.sources.push('mutineer');
-      }
-    }
-
-    for (const [findingId, challengeText] of Object.entries(
-      state.humanChallenges
-    )) {
-      if (!challengeText.trim()) continue;
-      if (!findFindingById(findingId, state.specialists)) continue;
-      if (!mergedMap.has(findingId)) {
-        mergedMap.set(findingId, { findingId, sources: ['human'] });
-      } else {
-        const entry = mergedMap.get(findingId)!;
-        if (!entry.sources.includes('human')) entry.sources.push('human');
-      }
+    // Update state with child results
+    for (const result of results) {
+      if (!result) continue;
+      state = {
+        ...state,
+        findings: state.findings.map((f) =>
+          f.findingId === result.findingId
+            ? {
+                ...f,
+                childStatus: 'complete' as const,
+                mutineerChallenge: result.mutineerChallenge,
+                mutineerVerdict: result.mutineerVerdict,
+                humanChallenge: result.humanChallenge,
+                ruling: result.ruling,
+                reasoning: result.reasoning,
+                arbiterMutineerStance: result.arbiterMutineerStance,
+                arbiterHumanStance: result.arbiterHumanStance,
+              }
+            : f
+        ),
+      };
     }
 
     state = {
       ...state,
-      arbitrations: Array.from(mergedMap.values()).map((c) => ({
-        findingId: c.findingId,
-        status: 'pending' as const,
-        challengeSources: c.sources,
-      })),
+      temporal: refreshTemporal(state.temporal, {
+        findingsCompletedAt: new Date().toISOString(),
+      }),
+    };
+  } else if (allFindings.length === 0) {
+    // No findings from specialists — skip to synthesis
+    state = {
+      ...state,
+      findings: [],
     };
   }
 
-  // ── Continue-As-New checkpoint 2 (post-challenge, slots initialized) ───────
+  // ── Continue-As-New checkpoint 2 (post-children, before synthesis) ─────────
   if (wf.workflowInfo().historyLength > CAN_THRESHOLD) {
+    state = {
+      ...state,
+      temporal: {
+        ...state.temporal,
+        continueAsNewCount: state.temporal.continueAsNewCount + 1,
+      },
+    };
     await wf.continueAsNew<typeof reviewWorkflow>({
       prUrl: args.prUrl,
       context: args.context,
@@ -424,103 +544,37 @@ export async function reviewWorkflow(args: {
     });
   }
 
-  // ── Step 4: Fan-out arbitrators for all non-complete findings ───────────────
-  const pendingArbs = state.arbitrations.filter((a) => a.status !== 'complete');
-
-  if (pendingArbs.length > 0) {
-    const arbitrationPromises = pendingArbs.map(async (arb) => {
-      const fid = arb.findingId;
-      const finding = findFindingById(fid, state.specialists);
-      if (!finding) return;
-
-      const mutineerChallenge = state.mutineerChallenges.find(
-        (c) => c.findingId === fid
-      )?.challengeText;
-      const humanChallenge = state.humanChallenges[fid]?.trim()
-        ? state.humanChallenges[fid]
-        : undefined;
-
-      state = {
-        ...state,
-        arbitrations: state.arbitrations.map((a) =>
-          a.findingId === fid ? { ...a, status: 'running' as const } : a
-        ),
-      };
-
-      try {
-        const decision = await runArbitrator({
-          finding,
-          mutineerChallenge,
-          humanChallenge,
-        });
-        state = {
-          ...state,
-          arbitrations: state.arbitrations.map((a) =>
-            a.findingId === fid
-              ? {
-                  ...a,
-                  status: 'complete' as const,
-                  ruling: decision.ruling,
-                  reasoning: decision.reasoning,
-                }
-              : a
-          ),
-        };
-      } catch {
-        state = {
-          ...state,
-          arbitrations: state.arbitrations.map((a) =>
-            a.findingId === fid
-              ? {
-                  ...a,
-                  status: 'complete' as const,
-                  ruling: 'inconclusive' as const,
-                  reasoning: 'Arbitrator unavailable',
-                }
-              : a
-          ),
-        };
-      }
-    });
-
-    await Promise.all(arbitrationPromises);
-  }
-
-  // ── Continue-As-New checkpoint 3 (post-arbitration) ───────────────────────
-  if (wf.workflowInfo().historyLength > CAN_THRESHOLD) {
-    await wf.continueAsNew<typeof reviewWorkflow>({
-      prUrl: args.prUrl,
-      context: args.context,
-      _resumeState: state,
-    });
-  }
-
-  // ── Step 5: Synthesis ──────────────────────────────────────────────────────
+  // ── Step 7: Synthesis ──────────────────────────────────────────────────────
   // Ensure all signal/update handlers have finished before reading final state
   await wf.condition(wf.allHandlersFinished);
 
   if (state.synthesisStatus !== 'complete' && state.synthesisStatus !== 'failed') {
-    state = { ...state, synthesisStatus: 'running' };
-
-    const specialistOutputs: Record<string, Finding[] | null> = {
-      ironjaw: state.specialists.ironjaw.findings,
-      barnacle: state.specialists.barnacle.findings,
-      greenhand: state.specialists.greenhand.findings,
+    state = {
+      ...state,
+      synthesisStatus: 'running',
+      temporal: refreshTemporal(state.temporal, {
+        synthesisStartedAt: new Date().toISOString(),
+      }),
     };
 
-    const arbitrationOutcomes = state.arbitrations
-      .filter((a) => a.ruling !== undefined)
-      .map((a) => ({
-        findingId: a.findingId,
-        challengeSources: a.challengeSources as string[],
-        ruling: a.ruling!,
-        reasoning: a.reasoning ?? '',
+    // Build unified findings for synthesis
+    const synthesisFindings = state.findings
+      .filter((f) => f.childStatus === 'complete')
+      .map((f) => ({
+        findingId: f.findingId,
+        specialist: f.specialist,
+        severity: f.severity,
+        description: f.description,
+        recommendation: f.recommendation,
+        mutineerChallenge: f.mutineerChallenge ?? null,
+        humanChallenge: f.humanChallenge ?? null,
+        ruling: f.ruling ?? ('accepted' as const),
+        reasoning: f.reasoning ?? '',
       }));
 
     try {
       const verdictResult = await runSynthesis({
-        specialistOutputs,
-        arbitrationOutcomes,
+        findings: synthesisFindings,
       });
       state = {
         ...state,
@@ -531,24 +585,16 @@ export async function reviewWorkflow(args: {
       state = { ...state, synthesisStatus: 'failed' };
     }
 
-    // ── Step 6: Write history record ────────────────────────────────────────
-    const info = wf.workflowInfo();
+    // ── Step 8: Write history record ────────────────────────────────────────
+    const histInfo = wf.workflowInfo();
     try {
       await writeHistoryRecord({
-        workflowId: info.workflowId,
+        workflowId: histInfo.workflowId,
         prUrl: args.prUrl,
         prTitle: state.title ?? '',
         repoName: state.repoName ?? '',
-        startedAt: info.startTime.toISOString(),
-        specialistOutputs,
-        disputeOutcomes: state.arbitrations
-          .filter((a) => a.ruling !== undefined)
-          .map((a) => ({
-            findingId: a.findingId,
-            challengeSources: a.challengeSources as string[],
-            ruling: a.ruling!,
-            reasoning: a.reasoning ?? '',
-          })),
+        startedAt: histInfo.startTime.toISOString(),
+        findings: synthesisFindings,
         verdict: state.verdict ?? { findings: [], summary: '' },
       });
     } catch {
@@ -556,6 +602,12 @@ export async function reviewWorkflow(args: {
     }
   }
 
-  state = { ...state, status: 'complete' };
+  state = {
+    ...state,
+    status: 'complete',
+    temporal: refreshTemporal(state.temporal, {
+      completedAt: new Date().toISOString(),
+    }),
+  };
   return state;
 }

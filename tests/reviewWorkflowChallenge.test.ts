@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import type { PRDiffResult } from '../apps/worker/activities/fetchGitHubPRDiff';
 import type { SpecialistResult } from '../apps/worker/activities/specialists';
-import type { MutineerResult } from '../apps/worker/activities/mutineer';
+import type { MutineerForFindingResult, MutineerForFindingInput } from '../apps/worker/activities/mutineer';
 import type { ArbitrationDecision } from '../apps/worker/activities/arbitrator';
 import type { SynthesisVerdict } from '../apps/worker/activities/synthesis';
 
@@ -41,18 +41,20 @@ const mockSpecialistNoFindings = async (): Promise<SpecialistResult> => ({
   findings: [],
   rawText: 'No issues found',
 });
-const mockMutineerWithChallenges = async (): Promise<MutineerResult> => ({
-  challenges: [
-    {
-      findingId: 'ironjaw-1',
-      specialistName: 'ironjaw',
-      challengeText: 'This is not actually a vulnerability.',
-    },
-  ],
+
+// Mutineer that challenges ironjaw-1
+const mockMutineerChallengeIronjaw = async (args: MutineerForFindingInput): Promise<MutineerForFindingResult> => {
+  if (args.finding.id === 'ironjaw-1') {
+    return { challenged: true, challengeText: 'This is not actually a vulnerability.' };
+  }
+  return { challenged: false, challengeText: null };
+};
+
+const mockMutineerNoChallenges = async (): Promise<MutineerForFindingResult> => ({
+  challenged: false,
+  challengeText: null,
 });
-const mockMutineerEmpty = async (): Promise<MutineerResult> => ({
-  challenges: [],
-});
+
 const mockArbitrator = async (): Promise<ArbitrationDecision> => ({
   ruling: 'upheld',
   reasoning: 'The finding stands despite the challenge.',
@@ -115,146 +117,128 @@ async function withWorkers(
   }
 }
 
-describe('reviewWorkflow — Issue #4 challenge phase', () => {
-  it('opens challenge window after specialist join gate', async () => {
+describe('reviewWorkflow — child workflow challenge phase', () => {
+  it('spawns child workflows and completes with findings in state', async () => {
     await withEnv(async (env) => {
       await withWorkers(
         env,
-        'test-challenge-window',
+        'test-child-basic',
         {
           ...BASE_ACTIVITIES,
-          runMutineer: mockMutineerEmpty,
+          runMutineerForFinding: mockMutineerNoChallenges,
           runArbitrator: mockArbitrator,
         },
         async () => {
           const handle = await env.client.workflow.start('reviewWorkflow', {
-            taskQueue: 'test-challenge-window',
-            workflowId: 'test-challenge-window-1',
+            taskQueue: 'test-child-basic',
+            workflowId: 'test-child-basic-1',
             args: [{ prUrl: 'https://github.com/acme/backend/pull/99' }],
           });
 
           const result = await handle.result();
           expect(result.status).toBe('complete');
           expect(result.windowOpen).toBe(false);
-          expect(result.mutineerStatus).toBe('complete');
+          // Should have 3 findings (one from each specialist)
+          expect(result.findings).toHaveLength(3);
+          // All accepted since no challenges
+          for (const f of result.findings) {
+            expect(f.childStatus).toBe('complete');
+            expect(f.ruling).toBe('accepted');
+          }
         }
       );
     });
   }, 60_000);
 
-  it('dispatches arbitrators for mutineer-challenged findings', async () => {
+  it('mutineer challenge in child workflow triggers arbitration', async () => {
     await withEnv(async (env) => {
       await withWorkers(
         env,
-        'test-arb-mutineer',
+        'test-child-mutineer',
         {
           ...BASE_ACTIVITIES,
-          runMutineer: mockMutineerWithChallenges,
+          runMutineerForFinding: mockMutineerChallengeIronjaw,
           runArbitrator: mockArbitrator,
         },
         async () => {
           const handle = await env.client.workflow.start('reviewWorkflow', {
-            taskQueue: 'test-arb-mutineer',
-            workflowId: 'test-arb-mutineer-1',
+            taskQueue: 'test-child-mutineer',
+            workflowId: 'test-child-mutineer-1',
             args: [{ prUrl: 'https://github.com/acme/backend/pull/99' }],
           });
 
           const result = await handle.result();
           expect(result.status).toBe('complete');
-          expect(result.arbitrations).toHaveLength(1);
-          expect(result.arbitrations[0].findingId).toBe('ironjaw-1');
-          expect(result.arbitrations[0].ruling).toBe('upheld');
-          expect(result.arbitrations[0].status).toBe('complete');
-          expect(result.arbitrations[0].challengeSources).toContain('mutineer');
+          expect(result.findings).toHaveLength(3);
+
+          const ironjawFinding = result.findings.find((f: { findingId: string }) => f.findingId === 'ironjaw-1');
+          expect(ironjawFinding).toBeDefined();
+          expect(ironjawFinding!.mutineerChallenge).toBe('This is not actually a vulnerability.');
+          expect(ironjawFinding!.ruling).toBe('upheld');
+          expect(ironjawFinding!.reasoning).toBe('The finding stands despite the challenge.');
+
+          // Other findings should be accepted (no challenge)
+          const barnacleFinding = result.findings.find((f: { findingId: string }) => f.findingId === 'barnacle-1');
+          expect(barnacleFinding!.ruling).toBe('accepted');
         }
       );
     });
   }, 60_000);
 
-  it('workflow completes if mutineer has no challenges and window expires', async () => {
+  it('human challenges are sent to child workflows via signal', async () => {
     await withEnv(async (env) => {
       await withWorkers(
         env,
-        'test-no-challenges',
+        'test-child-human',
         {
           ...BASE_ACTIVITIES,
-          runMutineer: mockMutineerEmpty,
-          runArbitrator: mockArbitrator,
-        },
-        async () => {
-          const handle = await env.client.workflow.start('reviewWorkflow', {
-            taskQueue: 'test-no-challenges',
-            workflowId: 'test-no-challenges-1',
-            args: [{ prUrl: 'https://github.com/acme/backend/pull/99' }],
-          });
-
-          const result = await handle.result();
-          expect(result.status).toBe('complete');
-          expect(result.arbitrations).toHaveLength(0);
-        }
-      );
-    });
-  }, 60_000);
-
-  it('human challenges are merged with mutineer challenges for same finding', async () => {
-    await withEnv(async (env) => {
-      await withWorkers(
-        env,
-        'test-merged-challenges',
-        {
-          ...BASE_ACTIVITIES,
-          runMutineer: mockMutineerWithChallenges, // challenges ironjaw-1
+          runMutineerForFinding: mockMutineerNoChallenges,
           runArbitrator: mockArbitratorOverturned,
         },
         async () => {
           const handle = await env.client.workflow.start('reviewWorkflow', {
-            taskQueue: 'test-merged-challenges',
-            workflowId: 'test-merged-challenges-1',
+            taskQueue: 'test-child-human',
+            workflowId: 'test-child-human-1',
             args: [{ prUrl: 'https://github.com/acme/backend/pull/99' }],
           });
 
-          // Fire executeUpdate concurrently with result() so the long-poll on
-          // result() prevents the time-skipping server from advancing the timer
-          // before the update is delivered.
+          // Submit human challenge concurrently with result()
           const [updateResult, result] = await Promise.all([
             handle.executeUpdate('submitChallenges', {
-              args: [{ 'ironjaw-1': 'I also disagree with this finding.' }],
+              args: [{ 'ironjaw-1': 'I disagree with this finding.' }],
             }),
             handle.result(),
           ]);
 
           expect(updateResult).toEqual({ accepted: true });
           expect(result.status).toBe('complete');
-          // Should still be one arbitration for ironjaw-1 (not duplicated)
-          expect(result.arbitrations).toHaveLength(1);
-          expect(result.arbitrations[0].findingId).toBe('ironjaw-1');
-          // Both sources present
-          expect(result.arbitrations[0].challengeSources).toContain('mutineer');
-          expect(result.arbitrations[0].challengeSources).toContain('human');
-          expect(result.arbitrations[0].ruling).toBe('overturned');
+          expect(result.humanChallenges).toEqual({ 'ironjaw-1': 'I disagree with this finding.' });
+
+          const ironjawFinding = result.findings.find((f: { findingId: string }) => f.findingId === 'ironjaw-1');
+          expect(ironjawFinding!.humanChallenge).toBe('I disagree with this finding.');
+          expect(ironjawFinding!.ruling).toBe('overturned');
         }
       );
     });
   }, 60_000);
 
-  it('extendReviewWindow signal adds 120 seconds', async () => {
+  it('extendReviewWindow signal still works with child workflow architecture', async () => {
     await withEnv(async (env) => {
       await withWorkers(
         env,
-        'test-extend-window',
+        'test-child-extend',
         {
           ...BASE_ACTIVITIES,
-          runMutineer: mockMutineerEmpty,
+          runMutineerForFinding: mockMutineerNoChallenges,
           runArbitrator: mockArbitrator,
         },
         async () => {
           const handle = await env.client.workflow.start('reviewWorkflow', {
-            taskQueue: 'test-extend-window',
-            workflowId: 'test-extend-window-1',
+            taskQueue: 'test-child-extend',
+            workflowId: 'test-child-extend-1',
             args: [{ prUrl: 'https://github.com/acme/backend/pull/99' }],
           });
 
-          // Send signal concurrently with result() for the same reason as above.
           const [, result] = await Promise.all([
             handle.signal('extendReviewWindow'),
             handle.result(),
@@ -266,95 +250,61 @@ describe('reviewWorkflow — Issue #4 challenge phase', () => {
     });
   }, 60_000);
 
-  it('submitChallenges closes the window and stores human challenges', async () => {
+  it('no child workflows spawned when all specialists return no findings', async () => {
     await withEnv(async (env) => {
       await withWorkers(
         env,
-        'test-submit-challenges',
-        {
-          ...BASE_ACTIVITIES,
-          runMutineer: mockMutineerEmpty,
-          runArbitrator: mockArbitrator,
-        },
-        async () => {
-          const handle = await env.client.workflow.start('reviewWorkflow', {
-            taskQueue: 'test-submit-challenges',
-            workflowId: 'test-submit-challenges-1',
-            args: [{ prUrl: 'https://github.com/acme/backend/pull/99' }],
-          });
-
-          // Concurrent: submit update + await result
-          const [updateResult, result] = await Promise.all([
-            handle.executeUpdate('submitChallenges', {
-              args: [{ 'ironjaw-1': 'I think this is fine.' }],
-            }),
-            handle.result(),
-          ]);
-
-          expect(updateResult).toEqual({ accepted: true });
-          expect(result.status).toBe('complete');
-          expect(result.humanChallenges).toEqual({ 'ironjaw-1': 'I think this is fine.' });
-          // One arbitration for the human challenge
-          expect(result.arbitrations).toHaveLength(1);
-          expect(result.arbitrations[0].challengeSources).toContain('human');
-        }
-      );
-    });
-  }, 60_000);
-
-  it('workflow state shows arbitration as complete with ruling', async () => {
-    await withEnv(async (env) => {
-      await withWorkers(
-        env,
-        'test-arb-query',
-        {
-          ...BASE_ACTIVITIES,
-          runMutineer: mockMutineerWithChallenges,
-          runArbitrator: mockArbitrator,
-        },
-        async () => {
-          const handle = await env.client.workflow.start('reviewWorkflow', {
-            taskQueue: 'test-arb-query',
-            workflowId: 'test-arb-query-1',
-            args: [{ prUrl: 'https://github.com/acme/backend/pull/99' }],
-          });
-
-          await handle.result();
-
-          const state = await handle.query('getReviewState') as {
-            arbitrations: Array<{ status: string; ruling: string }>;
-          };
-          expect(state.arbitrations[0].status).toBe('complete');
-          expect(state.arbitrations[0].ruling).toBe('upheld');
-        }
-      );
-    });
-  }, 60_000);
-
-  it('no arbitrators when all specialists return no findings', async () => {
-    await withEnv(async (env) => {
-      await withWorkers(
-        env,
-        'test-no-findings',
+        'test-child-no-findings',
         {
           fetchGitHubPRDiff: mockFetch,
           runIronjaw: mockSpecialistNoFindings,
           runBarnacle: mockSpecialistNoFindings,
           runGreenhand: mockSpecialistNoFindings,
-          runMutineer: mockMutineerEmpty,
+          runMutineerForFinding: mockMutineerNoChallenges,
           runArbitrator: mockArbitrator,
         },
         async () => {
           const handle = await env.client.workflow.start('reviewWorkflow', {
-            taskQueue: 'test-no-findings',
-            workflowId: 'test-no-findings-1',
+            taskQueue: 'test-child-no-findings',
+            workflowId: 'test-child-no-findings-1',
             args: [{ prUrl: 'https://github.com/acme/backend/pull/99' }],
           });
 
           const result = await handle.result();
           expect(result.status).toBe('complete');
-          expect(result.arbitrations).toHaveLength(0);
-          expect(result.mutineerChallenges).toHaveLength(0);
+          expect(result.findings).toHaveLength(0);
+        }
+      );
+    });
+  }, 60_000);
+
+  it('child workflow results include specialist and severity metadata', async () => {
+    await withEnv(async (env) => {
+      await withWorkers(
+        env,
+        'test-child-metadata',
+        {
+          ...BASE_ACTIVITIES,
+          runMutineerForFinding: mockMutineerNoChallenges,
+          runArbitrator: mockArbitrator,
+        },
+        async () => {
+          const handle = await env.client.workflow.start('reviewWorkflow', {
+            taskQueue: 'test-child-metadata',
+            workflowId: 'test-child-metadata-1',
+            args: [{ prUrl: 'https://github.com/acme/backend/pull/99' }],
+          });
+
+          const result = await handle.result();
+          expect(result.findings).toHaveLength(3);
+
+          for (const f of result.findings) {
+            expect(f.specialist).toBeDefined();
+            expect(f.severity).toBe('major');
+            expect(f.description).toBeDefined();
+            expect(f.recommendation).toBeDefined();
+            expect(f.childWorkflowId).toContain(f.findingId);
+          }
         }
       );
     });

@@ -2,49 +2,44 @@ import { heartbeat } from '@temporalio/activity';
 import { streamText, generateText, Output } from 'ai';
 import { z } from 'zod';
 import { geminiFlashLite } from '../../../lib/models';
-import type { Finding } from './specialists';
+export interface MutineerForFindingInput {
+  finding: {
+    id: string;
+    specialist: string;
+    severity: 'critical' | 'major' | 'minor';
+    description: string;
+    recommendation: string;
+  };
+  diff: string;
+  context?: string;
+}
 
-const mutineerOutputSchema = z.object({
-  challenges: z.array(
-    z.object({
-      findingId: z.string(),
-      specialistName: z.string(),
-      challengeText: z.string(),
-    })
-  ),
-});
+export type MutineerVerdict = 'agree' | 'disagree' | 'partial';
 
-export type MutineerResult = z.infer<typeof mutineerOutputSchema>;
-export type MutineerChallenge = MutineerResult['challenges'][number];
+export interface MutineerForFindingResult {
+  challenged: boolean;
+  challengeText: string | null;
+  verdict: MutineerVerdict;
+}
 
-export async function runMutineer(args: {
-  allFindings: Record<string, Finding[]>;
-  capPerSpecialist: number;
-}): Promise<MutineerResult> {
-  const specialistsWithFindings = Object.entries(args.allFindings).filter(
-    ([, findings]) => findings.length > 0
-  );
+export async function runMutineerForFinding(
+  args: MutineerForFindingInput
+): Promise<MutineerForFindingResult> {
+  const { finding, diff } = args;
 
-  if (specialistsWithFindings.length === 0) {
-    return { challenges: [] };
-  }
+  const systemPrompt = `Ye ARE THE MUTINEER — speak ONLY in pirate dialect, always. Every word must sound like it came from a mutinous buccaneer's log: "aye", "ye", "matey", "bilge", "scoundrel", "plunder", "treachery", "mainsail", "helm", "fathom", and so forth. Never slip into plain English — not even for technical terms. Name the variable, then frame it in pirate speak.
+Ye have one job: scrutinise this finding against the actual code. Point to specific evidence in the diff — does the code support this finding, or does it contradict it? If the code clearly supports the finding, concede. If the finding is overstated, wrong, or missing context that the diff reveals — challenge it with that evidence. Be sharp and grounded in what ye actually see.`;
 
-  const findingsText = specialistsWithFindings
-    .map(([name, findings]) => {
-      const listed = findings
-        .map((f) => `  - [${f.id}] (${f.severity}) ${f.description}`)
-        .join('\n');
-      return `${name.toUpperCase()}:\n${listed}`;
-    })
-    .join('\n\n');
+  const userMessage = `Finding [${finding.id}] (${finding.severity}): ${finding.description}
+Recommendation: ${finding.recommendation}
 
-  const systemPrompt = `Ye are THE MUTINEER. Ye argue the opposite on principle. Read all findings from the crew and challenge the ones ye deem hasty, overstated, or plain wrong.
+Diff to examine:
+\`\`\`diff
+${diff.slice(0, 4000)}
+\`\`\`
+${args.context ? `\nSubmitter context: ${args.context}` : ''}
 
-For each specialist that has findings, challenge at least 1 but no more than ${args.capPerSpecialist} of their findings.
-Write in first-person pirate voice — sharp, contrarian, unyielding.
-For each challenge, reference the exact finding ID and give a focused opposing argument: name why the finding is wrong, overstated, or missing context.`;
-
-  const userMessage = `Here are the findings from the crew:\n\n${findingsText}\n\nChallenge them. Minimum 1 per specialist that has findings, maximum ${args.capPerSpecialist} per specialist.`;
+Look at the diff. Does the code actually support this finding? Challenge or concede based on what ye see.`;
 
   const streamResult = streamText({
     model: geminiFlashLite,
@@ -56,23 +51,37 @@ For each challenge, reference the exact finding ID and give a focused opposing a
   for await (const part of streamResult.fullStream) {
     if (part.type === 'text-delta') {
       accumulated += part.text;
-      heartbeat({ partialOutput: accumulated });
+      heartbeat();
     }
   }
 
+  const singleChallengeSchema = z.object({
+    challenged: z.boolean(),
+    challengeText: z.string().nullable().describe('2-4 sentences in pirate voice preserving the original tone'),
+    verdict: z.enum(['agree', 'disagree', 'partial']),
+  });
+
   const { experimental_output: structured } = await generateText({
     model: geminiFlashLite,
-    system: `You are a JSON extractor. Given the following challenge output from THE MUTINEER, extract all challenges into the required schema. Each challenge must reference a valid finding ID from the crew's output.`,
+    system: `You are a JSON extractor. Given the following output from THE MUTINEER about a single finding, extract into the required schema.
+- "challenged": true if the mutineer pushed back on the finding, false if they conceded.
+- "challengeText": the mutineer's core argument in 2-4 sentences. Preserve the original pirate voice and tone. Null if conceded.
+- "verdict": "agree" if the mutineer fully concedes, "disagree" if they fundamentally reject the finding, "partial" if they acknowledge some merit but raise concerns.`,
     messages: [
       {
         role: 'user',
-        content: `Extract challenges from this output:\n\n${accumulated}`,
+        content: `Extract from this output:\n\n${accumulated}`,
       },
     ],
-    experimental_output: Output.object({ schema: mutineerOutputSchema }),
+    experimental_output: Output.object({ schema: singleChallengeSchema }),
   });
 
+  const verdict = structured?.verdict ?? (structured?.challenged ? 'disagree' : 'agree');
+
   return {
-    challenges: structured?.challenges ?? [],
+    challenged: structured?.challenged ?? false,
+    challengeText: structured?.challengeText ?? null,
+    verdict,
   };
 }
+

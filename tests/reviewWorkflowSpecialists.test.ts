@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import type { PRDiffResult } from '../apps/worker/activities/fetchGitHubPRDiff';
 import type { SpecialistResult } from '../apps/worker/activities/specialists';
-import type { MutineerResult } from '../apps/worker/activities/mutineer';
+import type { MutineerForFindingResult } from '../apps/worker/activities/mutineer';
 import type { ArbitrationDecision } from '../apps/worker/activities/arbitrator';
 import type { SynthesisVerdict } from '../apps/worker/activities/synthesis';
 
@@ -61,8 +61,9 @@ const mockRunGreenhand = async (args: {
   rawText: `Greenhand reports... Diff: ${args.diff.slice(0, 20)}`,
 });
 
-const mockMutineer = async (): Promise<MutineerResult> => ({
-  challenges: [],
+const mockMutineerForFinding = async (): Promise<MutineerForFindingResult> => ({
+  challenged: false,
+  challengeText: null,
 });
 
 const mockArbitrator = async (): Promise<ArbitrationDecision> => ({
@@ -126,7 +127,7 @@ describe('reviewWorkflow — Issue #3 specialists', () => {
         runIronjaw: mockRunIronjaw,
         runBarnacle: mockRunBarnacle,
         runGreenhand: mockRunGreenhand,
-        runMutineer: mockMutineer,
+        runMutineerForFinding: mockMutineerForFinding,
         runArbitrator: mockArbitrator,
       },
       async () => {
@@ -159,7 +160,7 @@ describe('reviewWorkflow — Issue #3 specialists', () => {
         runIronjaw: mockRunIronjaw,
         runBarnacle: mockRunBarnacle,
         runGreenhand: mockRunGreenhand,
-        runMutineer: mockMutineer,
+        runMutineerForFinding: mockMutineerForFinding,
         runArbitrator: mockArbitrator,
       },
       async () => {
@@ -194,7 +195,7 @@ describe('reviewWorkflow — Issue #3 specialists', () => {
         runIronjaw: mockRunIronjaw,
         runBarnacle: mockRunBarnacle,
         runGreenhand: mockRunGreenhand,
-        runMutineer: mockMutineer,
+        runMutineerForFinding: mockMutineerForFinding,
         runArbitrator: mockArbitrator,
       },
       async () => {

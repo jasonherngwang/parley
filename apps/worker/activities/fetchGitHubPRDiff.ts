@@ -1,4 +1,4 @@
-import { ApplicationFailure, heartbeat } from '@temporalio/activity';
+import { heartbeat } from '@temporalio/activity';
 import { parseGitHubPRUrl, fetchPRFiles } from '../../../lib/github';
 
 export interface PRDiffResult {
@@ -8,8 +8,6 @@ export interface PRDiffResult {
   diff: string;
   submitterContext: string;
 }
-
-const MAX_LINE_COUNT = 500;
 
 export async function fetchGitHubPRDiff(args: {
   prUrl: string;
@@ -21,18 +19,11 @@ export async function fetchGitHubPRDiff(args: {
 
   heartbeat('Fetching PR files from GitHub...');
 
-  const { title, repoName, diff, lineCount } = await fetchPRFiles(
+  const { title, repoName, diff } = await fetchPRFiles(
     parsed.owner,
     parsed.repo,
     parsed.number
   );
-
-  if (lineCount > MAX_LINE_COUNT) {
-    throw ApplicationFailure.nonRetryable(
-      `Diff too large: ${lineCount} lines (max ${MAX_LINE_COUNT}). Please submit a smaller PR.`,
-      'DiffTooLarge'
-    );
-  }
 
   return {
     title,

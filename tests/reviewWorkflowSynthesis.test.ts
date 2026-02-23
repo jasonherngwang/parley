@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import type { PRDiffResult } from '../apps/worker/activities/fetchGitHubPRDiff';
 import type { SpecialistResult } from '../apps/worker/activities/specialists';
-import type { MutineerResult } from '../apps/worker/activities/mutineer';
+import type { MutineerForFindingResult } from '../apps/worker/activities/mutineer';
 import type { ArbitrationDecision } from '../apps/worker/activities/arbitrator';
 import type { SynthesisVerdict } from '../apps/worker/activities/synthesis';
 import type { WriteHistoryArgs } from '../apps/worker/activities/history';
@@ -38,8 +38,9 @@ const mockGreenhand = async (): Promise<SpecialistResult> => ({
   findings: [makeFinding('greenhand')],
   rawText: 'Greenhand reports',
 });
-const mockMutineerEmpty = async (): Promise<MutineerResult> => ({
-  challenges: [],
+const mockMutineerNoChallenges = async (): Promise<MutineerForFindingResult> => ({
+  challenged: false,
+  challengeText: null,
 });
 const mockArbitrator = async (): Promise<ArbitrationDecision> => ({
   ruling: 'upheld',
@@ -51,19 +52,19 @@ const FIXTURE_VERDICT: SynthesisVerdict = {
     {
       severity: 'major',
       specialist: 'ironjaw',
-      description: 'ironjaw issue',
+      finding: 'ironjaw issue',
       recommendation: 'Fix ironjaw',
     },
     {
       severity: 'major',
       specialist: 'barnacle',
-      description: 'barnacle issue',
+      finding: 'barnacle issue',
       recommendation: 'Fix barnacle',
     },
     {
       severity: 'major',
       specialist: 'greenhand',
-      description: 'greenhand issue',
+      finding: 'greenhand issue',
       recommendation: 'Fix greenhand',
     },
   ],
@@ -82,7 +83,7 @@ const BASE_FAST_ACTIVITIES = {
   runIronjaw: mockIronjaw,
   runBarnacle: mockBarnacle,
   runGreenhand: mockGreenhand,
-  runMutineer: mockMutineerEmpty,
+  runMutineerForFinding: mockMutineerNoChallenges,
   runArbitrator: mockArbitrator,
   writeHistoryRecord: mockWriteHistory,
 };
@@ -125,8 +126,8 @@ async function withWorkers(
   }
 }
 
-describe('reviewWorkflow — Issue #5 synthesis', () => {
-  it('synthesis runs after arbitrations and verdict appears in final state', async () => {
+describe('reviewWorkflow — synthesis with child workflows', () => {
+  it('synthesis runs after child workflows and verdict appears in final state', async () => {
     await withEnv(async (env) => {
       capturedHistoryArgs = null;
 

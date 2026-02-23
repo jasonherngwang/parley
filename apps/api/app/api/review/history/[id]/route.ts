@@ -13,11 +13,14 @@ export async function GET(
   if (!row) {
     return Response.json({ error: 'Not found' }, { status: 404 });
   }
-  // Parse JSON fields for the response
-  return Response.json({
-    ...row,
-    specialistOutputs: JSON.parse(row.specialistOutputs),
-    disputeOutcomes: JSON.parse(row.disputeOutcomes),
-    verdict: JSON.parse(row.verdict),
-  });
+  try {
+    return Response.json({
+      ...row,
+      specialistOutputs: JSON.parse(row.specialistOutputs),
+      disputeOutcomes: JSON.parse(row.disputeOutcomes),
+      verdict: JSON.parse(row.verdict),
+    });
+  } catch {
+    return Response.json({ error: 'Review record is corrupt' }, { status: 500 });
+  }
 }

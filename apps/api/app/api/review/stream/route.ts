@@ -27,13 +27,11 @@ export async function GET(request: Request) {
             try {
               const client = await getTemporalClient();
               const handle = client.workflow.getHandle(active.workflowId);
-              const state = await handle.query('getReviewState');
+              const state = await handle.query('getReviewState') as Record<string, unknown> & { status: string };
 
-              send({ type: (state as { status: string }).status, ...(state as Record<string, unknown>) });
-
-              if ((state as { status: string }).status === 'complete') {
-                clearActiveWorkflow();
-              }
+              // Always send the current state — including 'complete'.
+              // The active workflow stays until a new review replaces it.
+              send({ type: state.status, ...state });
             } catch {
               // Workflow may have been terminated or doesn't exist
               clearActiveWorkflow();
@@ -42,7 +40,7 @@ export async function GET(request: Request) {
           }
         } catch (err) {
           console.error('SSE poll error:', err);
-          send({ type: 'error', message: 'Internal error' });
+          send({ type: 'floor-open' });
         }
       };
 

@@ -8,9 +8,9 @@ export const findingSchema = z.object({
     z.object({
       id: z.string(),
       severity: z.enum(['critical', 'major', 'minor']),
-      description: z.string(),
+      description: z.string().describe('1-3 sentence description of the issue, in pirate speak'),
       lineReference: z.number().optional(),
-      recommendation: z.string(),
+      recommendation: z.string().describe('1-2 sentence prescriptive fix, in pirate speak'),
     })
   ),
 });
@@ -43,14 +43,14 @@ async function runSpecialist(
   for await (const part of streamResult.fullStream) {
     if (part.type === 'text-delta') {
       accumulated += part.text;
-      heartbeat({ partialOutput: accumulated });
+      heartbeat();
     }
   }
 
   // Extract structured findings
   const { experimental_output: structured } = await generateText({
     model: geminiFlashLite,
-    system: `You are a JSON extractor. Given the following code review output from ${persona}, extract all findings into the required schema. Keep descriptions and recommendations concise.`,
+    system: `You are a JSON extractor. Given the following code review output from ${persona}, extract the top 2 most important findings into the required schema. Return at most 2 findings, prioritising critical over major over minor. Preserve the original pirate voice in descriptions and recommendations.`,
     messages: [
       {
         role: 'user',
@@ -61,7 +61,7 @@ async function runSpecialist(
   });
 
   return {
-    findings: structured?.findings ?? [],
+    findings: (structured?.findings ?? []).slice(0, 2),
     rawText: accumulated,
   };
 }
@@ -73,10 +73,10 @@ export async function runIronjaw(args: {
   return runSpecialist(
     args,
     'IRONJAW',
-    `Ye are IRONJAW, the ship's paranoid security auditor. Write yer review as first-person ship's log entries.
-Ye have a nose for rot in the hull — injection flaws, broken auth, secrets exposed to the wind, unsafe deserialization, privilege escalation, and every manner of treachery the enemy might exploit.
-Give findings unique IDs starting with "ironjaw-1", "ironjaw-2", etc.
-Be specific: name the line, name the threat, name what must be done.`
+    `Ye ARE IRONJAW — speak ONLY in pirate dialect, always. Every word must sound like it came from a weathered buccaneer's log: "aye", "ye", "matey", "port", "starboard", "hull", "scupper", "bilge", "plunder", "treachery", and so forth. Never slip into plain English.
+Ye are the ship's security researcher and penetration tester. Ye live and breathe application security — injection flaws, broken auth, secrets exposed to the wind, unsafe deserialization, privilege escalation, SSRF, XSS, and every manner of treachery the enemy might exploit. Ye think like an attacker.
+Give findings unique IDs starting with "ironjaw-1", "ironjaw-2", etc. Limit yerself to yer top 2 most critical security findings — only the vulnerabilities that truly endanger the ship.
+Be specific: name the line, name the attack vector, name what must be done to patch the hull.`
   );
 }
 
@@ -87,9 +87,9 @@ export async function runBarnacle(args: {
   return runSpecialist(
     args,
     'BARNACLE',
-    `Ye are BARNACLE, the ship's greybeard complexity skeptic — twenty years at sea and ye've seen this pattern sink ships before. Write yer review as first-person ship's log entries.
-Ye have an eye for over-engineering, hidden complexity, tangled dependencies, premature abstractions, and logic that'll be unmaintainable in six months. Ye've seen clever code kill crews.
-Give findings unique IDs starting with "barnacle-1", "barnacle-2", etc.
+    `Ye ARE BARNACLE — speak ONLY in pirate dialect, always. Every word must sound like it came from a grizzled old salt's log: "aye", "ye", "matey", "sea-dogs", "fathoms", "bilge", "scupper", "barnacle-crusted", "scuttled", and so forth. Never slip into plain English.
+Ye are the ship's greybeard complexity skeptic — twenty years at sea and ye've seen this pattern sink ships before. Ye have an eye for over-engineering, hidden complexity, tangled dependencies, premature abstractions, and logic that'll be unmaintainable in six months. Ye've seen clever code kill crews.
+Give findings unique IDs starting with "barnacle-1", "barnacle-2", etc. Limit yerself to yer top 2 most important findings — only the worst offenders.
 Be direct: name the smell, name the risk, name the simpler course.`
   );
 }
@@ -101,9 +101,9 @@ export async function runGreenhand(args: {
   return runSpecialist(
     args,
     'GREENHAND',
-    `Ye are GREENHAND, an enthusiastic junior on yer first voyage. Write yer review as first-person ship's log entries.
-Ye read code literally and ask the obvious questions the veterans overlook: missing null checks, unhandled errors, unclear variable names, missing tests, and logic that doesn't match the comments.
-Give findings unique IDs starting with "greenhand-1", "greenhand-2", etc.
+    `Ye ARE GREENHAND — speak ONLY in pirate dialect, always. Every word must sound like it came from an eager young deckhand's log: "aye", "ye", "cap'n", "shiver me timbers", "blimey", "ahoy", "starboard", "landlubber", and so forth. Never slip into plain English.
+Ye are an enthusiastic junior on yer first voyage. Ye read code literally and ask the obvious questions the veterans overlook: missing null checks, unhandled errors, unclear variable names, missing tests, and logic that doesn't match the comments.
+Give findings unique IDs starting with "greenhand-1", "greenhand-2", etc. Limit yerself to yer top 2 most important findings — only what truly worries ye.
 Be earnest: name what confused ye, name what might break, name what would help ye understand.`
   );
 }

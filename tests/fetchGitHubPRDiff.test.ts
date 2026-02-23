@@ -1,26 +1,9 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 
 // Mock @temporalio/activity before importing the activity
-vi.mock('@temporalio/activity', () => {
-  class ApplicationFailure extends Error {
-    nonRetryable: boolean = false;
-    type: string = '';
-    static nonRetryable(message: string, type: string) {
-      const err = new ApplicationFailure(message);
-      err.nonRetryable = true;
-      err.type = type;
-      return err;
-    }
-    constructor(message: string) {
-      super(message);
-      this.name = 'ApplicationFailure';
-    }
-  }
-  return {
-    heartbeat: vi.fn(),
-    ApplicationFailure,
-  };
-});
+vi.mock('@temporalio/activity', () => ({
+  heartbeat: vi.fn(),
+}));
 
 vi.mock('../lib/github', () => ({
   parseGitHubPRUrl: vi.fn(),
@@ -30,7 +13,6 @@ vi.mock('../lib/github', () => ({
 import { fetchGitHubPRDiff } from '../apps/worker/activities/fetchGitHubPRDiff';
 import { parseGitHubPRUrl, fetchPRFiles } from '../lib/github';
 
-// Fixture diff under 500 lines
 const FIXTURE_DIFF = `--- a/src/auth.ts
 +++ b/src/auth.ts
 @@ -1,5 +1,8 @@
@@ -79,22 +61,20 @@ describe('fetchGitHubPRDiff activity', () => {
     expect(result.submitterContext).toBe('security-critical auth rewrite');
   });
 
-  it('throws nonRetryable error when diff exceeds 500 lines', async () => {
-    const hugeDiff = Array(502).fill('+ added line').join('\n');
+  it('handles large diffs without rejecting', async () => {
+    const hugeDiff = Array(2000).fill('+ added line').join('\n');
     vi.mocked(fetchPRFiles).mockResolvedValue({
       title: 'Massive refactor',
       repoName: 'acme/backend',
       diff: hugeDiff,
-      lineCount: 502,
+      lineCount: 2000,
     });
 
-    await expect(
-      fetchGitHubPRDiff({ prUrl: 'https://github.com/acme/backend/pull/99' })
-    ).rejects.toMatchObject({
-      name: 'ApplicationFailure',
-      nonRetryable: true,
-      message: expect.stringContaining('Diff too large'),
+    const result = await fetchGitHubPRDiff({
+      prUrl: 'https://github.com/acme/backend/pull/99',
     });
+    expect(result.diff).toBe(hugeDiff);
+    expect(result.title).toBe('Massive refactor');
   });
 
   it('calls parseGitHubPRUrl with the provided URL', async () => {

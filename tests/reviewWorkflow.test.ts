@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import type { PRDiffResult } from '../apps/worker/activities/fetchGitHubPRDiff';
 import type { SpecialistResult } from '../apps/worker/activities/specialists';
-import type { MutineerResult } from '../apps/worker/activities/mutineer';
+import type { MutineerForFindingResult } from '../apps/worker/activities/mutineer';
 import type { ArbitrationDecision } from '../apps/worker/activities/arbitrator';
 import type { SynthesisVerdict } from '../apps/worker/activities/synthesis';
 
@@ -33,8 +33,9 @@ const mockSpecialist = async (): Promise<SpecialistResult> => ({
   rawText: 'Mock specialist output',
 });
 
-const mockMutineer = async (): Promise<MutineerResult> => ({
-  challenges: [],
+const mockMutineerForFinding = async (): Promise<MutineerForFindingResult> => ({
+  challenged: false,
+  challengeText: null,
 });
 
 const mockArbitrator = async (): Promise<ArbitrationDecision> => ({
@@ -66,7 +67,7 @@ async function withWorkers(
       runIronjaw: mockSpecialist,
       runBarnacle: mockSpecialist,
       runGreenhand: mockSpecialist,
-      runMutineer: mockMutineer,
+      runMutineerForFinding: mockMutineerForFinding,
       runArbitrator: mockArbitrator,
       writeHistoryRecord: mockWriteHistory,
     },

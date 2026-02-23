@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getTemporalClient } from '@lib/temporal';
-import { getActiveWorkflow, setActiveWorkflow } from '@lib/db';
+import { getActiveWorkflow, setActiveWorkflow, clearActiveWorkflow } from '@lib/db';
 import { parseGitHubPRUrl } from '@lib/github';
 
 const startBodySchema = z.object({
@@ -35,10 +35,27 @@ export async function POST(request: Request) {
 
     const existing = getActiveWorkflow();
     if (existing) {
-      return NextResponse.json(
-        { error: 'A review is already running' },
-        { status: 409 }
-      );
+      // Use describe() to check server-side execution status without replaying.
+      // This avoids nondeterminism errors when the workflow code has changed.
+      try {
+        const existingClient = await getTemporalClient();
+        const handle = existingClient.workflow.getHandle(existing.workflowId);
+        const desc = await handle.describe();
+        const status = desc.status.name;
+
+        if (status === 'RUNNING') {
+          return NextResponse.json(
+            { error: 'A review is already running' },
+            { status: 409 }
+          );
+        }
+        // Terminal state (COMPLETED, FAILED, TERMINATED, CANCELLED, TIMED_OUT)
+        // — safe to start a new one
+        clearActiveWorkflow();
+      } catch {
+        // Workflow gone from server — safe to proceed
+        clearActiveWorkflow();
+      }
     }
 
     const client = await getTemporalClient();
@@ -48,6 +65,9 @@ export async function POST(request: Request) {
       taskQueue: 'review-fast',
       workflowId,
       args: [{ prUrl: prUrl.trim(), context: context?.trim() || undefined }],
+      // Global timeout: auto-terminate if workflow is stuck. Normal reviews
+      // complete well within this window; if hit, it means something is stuck.
+      workflowExecutionTimeout: '30 minutes',
     });
 
     setActiveWorkflow(workflowId);
