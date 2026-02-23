@@ -2,6 +2,28 @@
 
 import { WHY_COPY } from '../shared';
 
+function renderWithCode(text: string) {
+  const parts = text.split(/(`[^`]+`)/);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+          return (
+            <code
+              key={i}
+              className="rounded px-1 py-0.5 bg-surface-2 text-accent"
+              style={{ fontFamily: 'var(--font-mono)', fontSize: '0.875em' }}
+            >
+              {part.slice(1, -1)}
+            </code>
+          );
+        }
+        return part;
+      })}
+    </>
+  );
+}
+
 export function WhyDrawer({
   whyKey,
   onClose,
@@ -15,34 +37,44 @@ export function WhyDrawer({
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div
-        className="absolute inset-0 bg-black/50"
+        className="absolute inset-0 bg-black/60"
         onClick={onClose}
       />
-      <div className="animate-slide-in-right relative w-full max-w-md h-full bg-gray-950 border-l border-gray-700 p-6 overflow-y-auto shadow-2xl flex flex-col">
-        <div className="flex items-center justify-between mb-6">
-          <span className="text-xs text-gray-500 uppercase tracking-widest font-semibold">
-            Why this?
+      <div className="animate-slide-in-right relative w-full max-w-md h-full bg-surface-0 border-l border-border-default p-6 overflow-y-auto shadow-[0_4px_24px_rgba(0,0,0,0.6)] flex flex-col">
+        <div className="flex items-center justify-between mb-6 pb-4 border-b border-border-subtle">
+          <span className="text-[11px] text-text-tertiary uppercase tracking-[0.08em] font-medium" style={{ fontFamily: 'var(--font-heading)' }}>
+            What&apos;s this?
           </span>
           <button
             onClick={onClose}
-            className="text-gray-500 hover:text-gray-300 transition-colors text-lg leading-none"
+            className="text-text-tertiary hover:text-text-primary transition-colors text-lg leading-none"
             aria-label="Close drawer"
           >
             ✕
           </button>
         </div>
-        <h2 className="text-base font-bold text-gray-100 mb-5">{content.title}</h2>
+        <h2 className="font-heading text-xl font-bold text-text-primary mb-5 tracking-[0.04em] uppercase">{content.title}</h2>
         <div className="space-y-4 flex-1">
           {content.paragraphs.map((p, i) => (
-            <p key={i} className="text-sm text-gray-400 leading-relaxed">
-              {p}
+            <p key={i} className="text-sm text-text-secondary leading-relaxed" style={{ fontFamily: 'var(--font-body)' }}>
+              {renderWithCode(p)}
             </p>
           ))}
-        </div>
-        <div className="mt-6 pt-4 border-t border-gray-800">
-          <p className="text-[10px] text-gray-600 italic">
-            Powered by Temporal &mdash; durable workflow orchestration
-          </p>
+          {content.config && (
+            <div className="mt-2 rounded border border-border-subtle bg-surface-2 p-3">
+              <p className="text-[10px] uppercase tracking-[0.08em] text-text-ghost font-semibold mb-2" style={{ fontFamily: 'var(--font-heading)' }}>
+                Configuration
+              </p>
+              <div className="space-y-1.5">
+                {content.config.map(({ label, value }, i) => (
+                  <div key={i} className="flex items-baseline justify-between gap-4">
+                    <span className="text-[10px] text-text-tertiary shrink-0" style={{ fontFamily: 'var(--font-body)' }}>{label}</span>
+                    <span className="text-[11px] text-text-secondary text-right" style={{ fontFamily: 'var(--font-mono)' }}>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -1,72 +1,107 @@
 'use client';
 
 import { Handle, Position } from '@xyflow/react';
-import { ActivityBadge } from '../shared';
-import type { MutineerStatus, MutineerChallenge } from '../shared';
+import { InfoButton } from '../shared';
+import type { MutineerVerdict } from '../shared';
+
+function renderWithCode(text: string) {
+  const parts = text.split(/(`[^`]+`)/);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+          return (
+            <code key={i} className="rounded px-1 py-0.5 bg-surface-2 text-accent" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.875em' }}>
+              {part.slice(1, -1)}
+            </code>
+          );
+        }
+        return part;
+      })}
+    </>
+  );
+}
 
 interface MutineerNodeData {
-  status: MutineerStatus;
-  partialOutput?: string;
-  challenges: MutineerChallenge[];
+  findingId: string;
+  childStatus: 'started' | 'complete' | 'failed';
+  mutineerChallenge?: string | null;
+  mutineerVerdict?: MutineerVerdict;
+  mutineerFailed?: boolean;
+  onInfoClick?: () => void;
   [key: string]: unknown;
 }
 
-export function MutineerNode({ data }: { data: MutineerNodeData }) {
-  const { status, partialOutput, challenges } = data;
+const VERDICT_LABEL: Record<MutineerVerdict, { label: string; className: string }> = {
+  agree: { label: 'Agrees', className: 'text-status-done' },
+  disagree: { label: 'Disagrees', className: 'text-accent' },
+  partial: { label: 'Partial', className: 'text-text-secondary' },
+};
 
-  const borderColor =
-    status === 'complete'
-      ? 'border-orange-500'
-      : status === 'running'
-        ? 'border-blue-500'
-        : status === 'failed'
-          ? 'border-red-500'
-          : 'border-gray-600';
+export function MutineerNode({ data }: { data: MutineerNodeData }) {
+  const { childStatus, mutineerChallenge, mutineerVerdict } = data;
+  const isActive = childStatus === 'started';
+  const isDone = childStatus === 'complete' || childStatus === 'failed';
+  const hasMutineerResult = mutineerChallenge !== undefined;
+  const challenged = !!mutineerChallenge;
+  const isRunning = isActive && !hasMutineerResult;
+
+  const borderClass = isRunning
+    ? 'border-accent/50'
+    : challenged
+      ? 'border-accent/30'
+      : isDone || hasMutineerResult
+        ? 'border-border-default'
+        : 'border-border-default';
+
+  const verdictLabel = mutineerVerdict ? VERDICT_LABEL[mutineerVerdict] : null;
 
   return (
     <div
-      className={`w-64 rounded-xl border-2 p-3 text-xs bg-gray-900 shadow-lg transition-all duration-300 animate-node-entrance ${borderColor}`}
+      className={`relative w-[280px] rounded-lg border p-3 bg-surface-1 transition-all duration-300 animate-node-entrance ${borderClass}`}
+      style={{
+        outline: '1px solid rgba(90,69,48,0.3)',
+        outlineOffset: '2px',
+        boxShadow: isRunning
+          ? '0 1px 3px rgba(0,0,0,0.5), 0 0 8px rgba(200,144,42,0.2), inset 0 1px 0 rgba(240,228,200,0.04)'
+          : '0 1px 3px rgba(0,0,0,0.5), inset 0 1px 0 rgba(240,228,200,0.04)',
+      }}
     >
       <Handle type="target" position={Position.Top} className="opacity-0" />
-      <div className="flex items-center gap-2 mb-1">
-        {status === 'running' ? (
-          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400 shrink-0" />
-        ) : status === 'complete' ? (
-          <span className="h-2 w-2 rounded-full bg-orange-400 shrink-0" />
-        ) : status === 'failed' ? (
-          <span className="h-2 w-2 rounded-full bg-red-400 shrink-0" />
-        ) : (
-          <span className="h-2 w-2 rounded-full bg-gray-500 shrink-0" />
-        )}
-        <span className="font-bold text-gray-100 uppercase tracking-wide text-[11px]">
-          THE MUTINEER
-        </span>
-        <ActivityBadge />
-      </div>
-      <p className="text-gray-500 text-[10px] mb-2 italic">
-        Argues the opposite on principle.
-      </p>
+      {data.onInfoClick && <InfoButton onClick={data.onInfoClick} />}
 
-      {status === 'running' && partialOutput && (
-        <div className="rounded bg-gray-800 p-2 max-h-20 overflow-hidden text-gray-300 leading-relaxed">
-          <span className="line-clamp-3">{partialOutput}</span>
-          <span className="animate-pulse">&#9612;</span>
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <span className="font-heading font-bold text-text-primary uppercase tracking-[0.06em] text-[12px]">
+          Mutineer
+        </span>
+        {verdictLabel && (
+          <span className={`text-[10px] font-semibold font-heading uppercase tracking-wide ${verdictLabel.className}`}>
+            · {verdictLabel.label}
+          </span>
+        )}
+      </div>
+
+      {isActive && !hasMutineerResult && (
+        <p className="text-accent italic text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>
+          Reviewing...
+        </p>
+      )}
+
+      {challenged && (
+        <div className="max-h-[22rem] overflow-y-auto noDrag nowheel">
+          <p className="text-text-secondary text-[13px] leading-relaxed break-words" style={{ fontFamily: 'var(--font-body)' }}>
+            {renderWithCode(mutineerChallenge!)}
+          </p>
         </div>
       )}
-      {status === 'running' && !partialOutput && (
-        <p className="text-blue-400 italic">
-          Reviewing findings<span className="animate-pulse">&hellip;</span>
-        </p>
+
+      {hasMutineerResult && !challenged && !data.mutineerFailed && (
+        <p className="text-text-ghost text-[13px] italic" style={{ fontFamily: 'var(--font-body)' }}>No challenge</p>
       )}
-      {status === 'complete' && (
-        <p className="text-orange-300">
-          Challenged {challenges.length} finding
-          {challenges.length !== 1 ? 's' : ''}
-        </p>
+      {data.mutineerFailed && (
+        <p className="text-status-fail text-[13px] italic" style={{ fontFamily: 'var(--font-body)' }}>Analysis failed.</p>
       )}
-      {status === 'failed' && (
-        <p className="text-red-400 italic">Failed &mdash; no challenges filed</p>
-      )}
+
       <Handle type="source" position={Position.Bottom} className="opacity-0" />
     </div>
   );

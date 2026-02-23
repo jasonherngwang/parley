@@ -1,11 +1,53 @@
 @import "tailwindcss";
 
+/* ── Design tokens ──────────────────────────────────────────────────────────── */
+
+@theme {
+  /* Surfaces — warm mahogany */
+  --color-surface-0: #0B0906;
+  --color-surface-1: #131008;
+  --color-surface-2: #1C1910;
+  --color-surface-3: #252018;
+
+  /* Borders — warm wood/brass */
+  --color-border-subtle: #2A2015;
+  --color-border-default: #3D3020;
+  --color-border-emphasis: #5A4530;
+
+  /* Text — parchment/aged ink */
+  --color-text-primary: #F2E8D0;
+  --color-text-secondary: #D4B47A;
+  --color-text-tertiary: #A8845C;
+  --color-text-ghost: #6A5040;
+
+  /* Accent — weathered brass */
+  --color-accent: #C8902A;
+  --color-accent-muted: #7A5A1A;
+
+  /* Status */
+  --color-status-active: #D4953A;
+  --color-status-done: #4A8A68;
+  --color-status-fail: #903535;
+  --color-status-neutral: #5A5038;
+
+  /* Fonts */
+  --font-heading: var(--font-big-shoulders), sans-serif;
+  --font-body: var(--font-source-sans), sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+}
+
+/* ── Font utilities ─────────────────────────────────────────────────────────── */
+
+.font-heading {
+  font-family: var(--font-heading);
+}
+
 /* ── Node entrance animation ──────────────────────────────────────────────── */
 
 @keyframes nodeEntrance {
   from {
     opacity: 0;
-    transform: scale(0.95) translateY(8px);
+    transform: scale(0.97) translateY(6px);
   }
   to {
     opacity: 1;
@@ -14,10 +56,27 @@
 }
 
 .animate-node-entrance {
-  animation: nodeEntrance 0.4s ease-out forwards;
+  animation: nodeEntrance 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* ── Fade in up (submission card, overlays) ────────────────────────────────── */
+/* ── Ghost → Real reveal animation ─────────────────────────────────────── */
+
+@keyframes ghostReveal {
+  from {
+    opacity: 0.4;
+    border-color: var(--color-border-subtle);
+  }
+  to {
+    opacity: 1;
+    border-color: var(--reveal-border, var(--color-accent));
+  }
+}
+
+.animate-ghost-reveal {
+  animation: ghostReveal 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ── Fade in up (overlays) ─────────────────────────────────────────────────── */
 
 @keyframes fadeInUp {
   from {
@@ -31,7 +90,7 @@
 }
 
 .animate-fade-in-up {
-  animation: fadeInUp 0.35s ease-out forwards;
+  animation: fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 /* ── Slide in right (Why drawer) ──────────────────────────────────────────── */
@@ -48,63 +107,101 @@
 }
 
 .animate-slide-in-right {
-  animation: slideInRight 0.3s ease-out forwards;
+  animation: slideInRight 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 /* ── Edge glow (active animated edges) ────────────────────────────────────── */
 
 @keyframes edgeGlow {
   0%, 100% {
-    filter: drop-shadow(0 0 2px #3B82F6);
+    filter: drop-shadow(0 0 2px rgba(200, 144, 42, 0.4));
   }
   50% {
-    filter: drop-shadow(0 0 6px #3B82F6);
+    filter: drop-shadow(0 0 7px rgba(200, 144, 42, 0.65));
   }
 }
 
 .edge-glow .react-flow__edge-path {
-  animation: edgeGlow 2s ease-in-out infinite;
+  animation: edgeGlow 3s ease-in-out infinite;
 }
 
-/* ── Join gate unlock glow ────────────────────────────────────────────────── */
+/* ── Status dot pulse (scale-based, not opacity) ─────────────────────────── */
 
-@keyframes gateUnlock {
-  0% {
-    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5);
-  }
-  50% {
-    box-shadow: 0 0 12px 4px rgba(34, 197, 94, 0.3);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
-  }
+@keyframes statusPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.5); opacity: 0.7; }
 }
 
-.animate-gate-unlock {
-  animation: gateUnlock 0.6s ease-out;
+.animate-status-pulse {
+  animation: statusPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ── Cursor blink (streaming text cursor) ─────────────────────────────────── */
+
+@keyframes cursorBlink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.animate-cursor-blink {
+  animation: cursorBlink 1s steps(1) infinite;
+}
+
+/* ── Grain texture overlay ─────────────────────────────────────────────────── */
+
+.grain-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23grain)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 256px 256px;
 }
 
 /* ── React Flow overrides for dark theme ──────────────────────────────────── */
 
 .react-flow__controls {
-  border-color: #374151 !important;
+  border-color: var(--color-border-default) !important;
   box-shadow: none !important;
 }
 
 .react-flow__controls-button {
-  background: #111827 !important;
-  border-color: #374151 !important;
-  fill: #9CA3AF !important;
-  color: #9CA3AF !important;
+  background: var(--color-surface-1) !important;
+  border-color: var(--color-border-default) !important;
+  fill: var(--color-text-tertiary) !important;
+  color: var(--color-text-tertiary) !important;
 }
 
 .react-flow__controls-button:hover {
-  background: #1F2937 !important;
-  fill: #E5E7EB !important;
-  color: #E5E7EB !important;
+  background: var(--color-surface-2) !important;
+  fill: var(--color-text-primary) !important;
+  color: var(--color-text-primary) !important;
 }
 
 .react-flow__minimap {
-  background: #111827 !important;
-  border-color: #374151 !important;
+  background: var(--color-surface-1) !important;
+  border-color: var(--color-border-default) !important;
+}
+
+/* ── Custom scrollbars ─────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-emphasis);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-ghost);
 }

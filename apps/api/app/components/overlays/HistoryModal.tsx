@@ -12,37 +12,47 @@ export function HistoryModal({
 }) {
   const [items, setItems] = useState<HistorySummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(false);
 
   useEffect(() => {
     fetch('/api/review/history')
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error('Failed to load history');
+        return r.json();
+      })
       .then((data: HistorySummary[]) => {
         setItems(data);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        setFetchError(true);
+        setLoading(false);
+      });
   }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-      <div className="w-full max-w-lg rounded-2xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-bold text-gray-100 uppercase tracking-widest">
+      <div className="w-full max-w-lg rounded-lg border border-border-default bg-surface-1 p-6 shadow-[0_8px_32px_rgba(0,0,0,0.6)]">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="font-heading text-base font-bold text-text-primary tracking-[-0.01em]">
             Review History
           </h2>
           <button
             onClick={onClose}
-            className="text-gray-500 hover:text-gray-300 transition-colors text-lg leading-none"
+            className="text-text-tertiary hover:text-text-primary transition-colors text-lg leading-none"
           >
             ✕
           </button>
         </div>
 
-        {loading && <p className="text-gray-500 text-sm">Loading&hellip;</p>}
-        {!loading && items.length === 0 && (
-          <p className="text-gray-500 text-sm italic">No reviews yet.</p>
+        {loading && <p className="text-text-tertiary text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>Loading&hellip;</p>}
+        {!loading && fetchError && (
+          <p className="text-status-fail text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>Failed to load history.</p>
         )}
-        {!loading && items.length > 0 && (
+        {!loading && !fetchError && items.length === 0 && (
+          <p className="text-text-tertiary text-[13px] italic" style={{ fontFamily: 'var(--font-body)' }}>No reviews yet.</p>
+        )}
+        {!loading && !fetchError && items.length > 0 && (
           <ul className="space-y-2 max-h-96 overflow-y-auto">
             {items.map((item) => (
               <li key={item.id}>
@@ -51,20 +61,20 @@ export function HistoryModal({
                     onSelect(item.id);
                     onClose();
                   }}
-                  className="w-full rounded-lg border border-gray-700 bg-gray-800 p-3 text-left hover:border-purple-600 transition-colors"
+                  className="w-full rounded-md border border-border-subtle bg-surface-2 p-3 text-left hover:border-accent/40 transition-colors"
                 >
-                  <p className="text-gray-200 text-xs font-medium">
+                  <p className="text-text-primary text-[13px] font-medium" style={{ fontFamily: 'var(--font-body)' }}>
                     {item.prTitle || 'Untitled PR'}
                   </p>
                   <div className="flex items-center gap-3 mt-1">
-                    <span className="text-gray-500 text-[10px]">
+                    <span className="text-text-tertiary text-[11px]" style={{ fontFamily: 'var(--font-mono)' }}>
                       {item.repoName}
                     </span>
-                    <span className="text-purple-400 text-[10px]">
+                    <span className="text-accent text-[11px]" style={{ fontFamily: 'var(--font-mono)' }}>
                       {item.findingCount} finding
                       {item.findingCount !== 1 ? 's' : ''}
                     </span>
-                    <span className="text-gray-600 text-[10px] ml-auto">
+                    <span className="text-text-ghost text-[11px] ml-auto" style={{ fontFamily: 'var(--font-mono)' }}>
                       {new Date(item.completedAt).toLocaleDateString()}
                     </span>
                   </div>

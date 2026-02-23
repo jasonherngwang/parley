@@ -1,117 +1,85 @@
 'use client';
 
 import { Handle, Position } from '@xyflow/react';
-import { statusColor, statusDot, ActivityBadge } from '../shared';
+import {
+  statusColor,
+  statusDot,
+  InfoButton,
+} from '../shared';
 import type { SpecialistState } from '../shared';
+
+function renderWithCode(text: string) {
+  const parts = text.split(/(`[^`]+`)/);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+          return (
+            <code key={i} className="rounded px-1 py-0.5 bg-surface-2 text-accent" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.875em' }}>
+              {part.slice(1, -1)}
+            </code>
+          );
+        }
+        return part;
+      })}
+    </>
+  );
+}
 
 interface SpecialistNodeData {
   name: string;
   character: string;
   state: SpecialistState;
+  onInfoClick?: () => void;
   [key: string]: unknown;
 }
 
 export function SpecialistNode({ data }: { data: SpecialistNodeData }) {
   const { name, character, state } = data;
-  const severityCounts =
-    state.findings?.reduce(
-      (acc, f) => {
-        acc[f.severity] = (acc[f.severity] ?? 0) + 1;
-        return acc;
-      },
-      {} as Record<string, number>
-    ) ?? {};
+  const findingCount = state.findings?.length ?? 0;
+  const isRunning = state.status === 'running';
 
   return (
     <div
-      className={`w-56 rounded-xl border-2 p-3 text-xs shadow-lg transition-all duration-300 animate-node-entrance ${statusColor(state.status)}`}
+      className={`relative w-80 rounded-lg border p-4 transition-all duration-300 animate-node-entrance ${statusColor(state.status)}`}
+      style={{
+        outline: '1px solid rgba(90,69,48,0.3)',
+        outlineOffset: '2px',
+        boxShadow: isRunning
+          ? '0 1px 3px rgba(0,0,0,0.5), 0 0 14px rgba(200,144,42,0.25), inset 0 1px 0 rgba(240,228,200,0.04)'
+          : '0 1px 3px rgba(0,0,0,0.5), inset 0 1px 0 rgba(240,228,200,0.04)',
+      }}
     >
       <Handle type="target" position={Position.Top} className="opacity-0" />
-      <div className="flex items-center gap-2 mb-1">
+      {data.onInfoClick && <InfoButton onClick={data.onInfoClick} />}
+      <div className="flex items-center gap-2 mb-1.5">
         {statusDot(state.status)}
-        <span className="font-bold text-gray-100 uppercase tracking-wide text-[11px]">
+        <span className="font-heading font-bold text-text-primary uppercase tracking-[0.06em] text-sm">
           {name}
         </span>
-        <ActivityBadge />
-        {state.attemptNumber > 1 && (
-          <span className={`ml-auto text-[10px] ${state.status === 'running' ? 'text-amber-400 animate-pulse' : 'text-amber-400'}`}>
-            {state.attemptNumber}/3
-          </span>
-        )}
       </div>
-      <p className="text-gray-500 text-[10px] mb-2 italic">{character}</p>
+      <p className="text-text-tertiary text-[11px] mb-1.5 italic" style={{ fontFamily: 'var(--font-body)' }}>{character}</p>
 
       {state.status === 'running' && state.partialOutput && (
-        <div className="rounded bg-gray-800 p-2 max-h-24 overflow-hidden text-gray-300 leading-relaxed">
-          <span className="line-clamp-4">{state.partialOutput}</span>
-          <span className="animate-pulse">&#9612;</span>
+        <div className="rounded-md bg-surface-2 p-3 noDrag nowheel overflow-y-auto max-h-[14rem] text-text-secondary text-[13px] leading-relaxed" style={{ fontFamily: 'var(--font-body)' }}>
+          {renderWithCode(state.partialOutput)}
+          <span className="animate-cursor-blink">▌</span>
         </div>
       )}
       {state.status === 'running' && !state.partialOutput && (
-        <p className="text-blue-400 italic">
-          Running<span className="animate-pulse">&hellip;</span>
+        <p className="text-accent italic text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>
+          Running...
         </p>
       )}
 
-      {state.status === 'complete' && state.findings && (
-        <div className="space-y-1">
-          {state.findings.length === 0 ? (
-            <p className="text-gray-500 italic">No findings</p>
-          ) : (
-            <>
-              <div className="flex gap-2 text-[10px]">
-                {(severityCounts['critical'] ?? 0) > 0 && (
-                  <span className="text-red-400">
-                    {severityCounts['critical']} critical
-                  </span>
-                )}
-                {(severityCounts['major'] ?? 0) > 0 && (
-                  <span className="text-orange-400">
-                    {severityCounts['major']} major
-                  </span>
-                )}
-                {(severityCounts['minor'] ?? 0) > 0 && (
-                  <span className="text-yellow-400">
-                    {severityCounts['minor']} minor
-                  </span>
-                )}
-              </div>
-              <ul className="space-y-1 max-h-28 overflow-y-auto">
-                {state.findings.slice(0, 3).map((f) => (
-                  <li
-                    key={f.id}
-                    className="rounded bg-gray-800 px-2 py-1 text-gray-300 leading-snug"
-                  >
-                    <span
-                      className={
-                        f.severity === 'critical'
-                          ? 'text-red-400'
-                          : f.severity === 'major'
-                            ? 'text-orange-400'
-                            : 'text-yellow-400'
-                      }
-                    >
-                      [{f.severity}]
-                    </span>{' '}
-                    {f.description}
-                  </li>
-                ))}
-                {state.findings.length > 3 && (
-                  <li className="text-gray-500 italic">
-                    +{state.findings.length - 3} more
-                  </li>
-                )}
-              </ul>
-            </>
-          )}
-        </div>
+      {state.status === 'complete' && (
+        <p className="text-status-done text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>
+          ✓ {findingCount} finding{findingCount !== 1 ? 's' : ''}
+        </p>
       )}
 
-      {state.status === 'timed-out' && (
-        <p className="text-yellow-400 italic">Timed out after 45s</p>
-      )}
       {state.status === 'failed' && (
-        <p className="text-red-400 italic">Failed after 3 attempts</p>
+        <p className="text-status-fail italic text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>Analysis failed.</p>
       )}
 
       <Handle type="source" position={Position.Bottom} className="opacity-0" />

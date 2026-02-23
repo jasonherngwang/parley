@@ -1,160 +1,183 @@
 'use client';
 
 import { Handle, Position } from '@xyflow/react';
-import { ActivityBadge, verdictRulingBadge } from '../shared';
+import { InfoButton } from '../shared';
 import type { SynthesisStatus, SynthesisVerdict, VerdictFinding } from '../shared';
+
+function renderWithCode(text: string) {
+  const parts = text.split(/(`[^`]+`)/);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+          return (
+            <code key={i} className="rounded px-1 py-0.5 bg-surface-2 text-accent" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.875em' }}>
+              {part.slice(1, -1)}
+            </code>
+          );
+        }
+        return part;
+      })}
+    </>
+  );
+}
 
 interface SynthesisNodeData {
   status: SynthesisStatus;
   partialOutput?: string;
   verdict?: SynthesisVerdict;
+  onInfoClick?: () => void;
   [key: string]: unknown;
 }
 
-function VerdictFindingList({ findings }: { findings: VerdictFinding[] }) {
+const SEVERITY_COLOR: Record<string, string> = {
+  critical: '#D44040',
+  major: '#C8902A',
+  minor: '#A8845C',
+};
+
+const SEVERITY_RANK: Record<string, number> = { critical: 0, major: 1, minor: 2 };
+
+function VerdictDocument({ findings, summary }: { findings: VerdictFinding[]; summary: string }) {
+  const active = [...findings]
+    .filter((f) => f.ruling !== 'overturned')
+    .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9));
+  const overturned = [...findings]
+    .filter((f) => f.ruling === 'overturned')
+    .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9));
+  const ordered = [...active, ...overturned];
+
   return (
-    <ul className="space-y-1.5">
-      {findings.map((f, i) => (
-        <li key={i} className="rounded-lg bg-gray-800 p-2 space-y-1">
-          <div className="flex items-start gap-1.5 flex-wrap">
-            <span className="text-gray-400 text-[8px] font-mono uppercase font-semibold">
-              {f.specialist.toUpperCase()}
-            </span>
-            {verdictRulingBadge(f.ruling)}
-            {f.challengeSources && f.challengeSources.length > 0 && (
-              <div className="flex gap-1">
-                {f.challengeSources.includes('mutineer') && (
-                  <span className="rounded border border-orange-700 bg-orange-900/30 px-1 py-0.5 text-[8px] text-orange-300">
-                    MUTINEER
-                  </span>
-                )}
-                {f.challengeSources.includes('human') && (
-                  <span className="rounded border border-blue-700 bg-blue-900/30 px-1 py-0.5 text-[8px] text-blue-300">
-                    Human
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-          <p className="text-gray-300 text-[10px]">{f.description}</p>
-          <p className="text-gray-500 text-[9px]">
-            <span className="text-gray-600">Rec:</span> {f.recommendation}
+    <div className="space-y-3">
+      {summary && (
+        <p className="text-text-secondary leading-relaxed text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>
+          {renderWithCode(summary)}
+        </p>
+      )}
+
+      {ordered.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[10px] text-text-tertiary uppercase font-semibold tracking-wide font-heading">
+            Findings
           </p>
-        </li>
-      ))}
-    </ul>
+          {ordered.map((f, i) => {
+            const overturned = f.ruling === 'overturned';
+            return (
+              <div key={i} className="pt-3 space-y-2 border-t border-border-subtle first:border-t-0 first:pt-0">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="text-[10px] font-semibold uppercase font-heading"
+                    style={{
+                      color: SEVERITY_COLOR[f.severity] ?? '#A8845C',
+                      opacity: overturned ? 0.4 : 1,
+                      textDecoration: overturned ? 'line-through' : undefined,
+                    }}
+                  >
+                    {f.severity}
+                  </span>
+                  <span className="text-text-ghost text-[10px]" style={{ fontFamily: 'var(--font-mono)' }}>
+                    via {f.specialist.toUpperCase()}
+                  </span>
+                  {overturned && (
+                    <span className="text-[10px] font-semibold uppercase font-heading text-text-ghost">
+                      · overturned
+                    </span>
+                  )}
+                </div>
+                <p className={`text-[13px] leading-relaxed ${overturned ? 'text-text-tertiary line-through' : 'text-text-primary'}`} style={{ fontFamily: 'var(--font-body)' }}>
+                  {renderWithCode(f.finding)}
+                </p>
+                <div className="pl-3 border-l-2" style={{ borderColor: overturned ? 'rgba(106,80,64,0.4)' : 'rgba(200,144,42,0.4)' }}>
+                  <p className={`text-[13px] leading-relaxed italic ${overturned ? 'text-text-tertiary' : 'text-text-secondary'}`} style={{ fontFamily: 'var(--font-body)' }}>
+                    {renderWithCode(f.recommendation)}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {ordered.length === 0 && (
+        <p className="text-text-ghost italic text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>No actionable findings.</p>
+      )}
+    </div>
   );
 }
 
 export function SynthesisNode({ data }: { data: SynthesisNodeData }) {
   const { status, partialOutput, verdict } = data;
+  const isRunning = status === 'running';
 
-  const borderColor =
+  const borderClass =
     status === 'complete'
-      ? 'border-purple-500'
-      : status === 'running'
-        ? 'border-blue-500'
+      ? 'border-accent/60'
+      : isRunning
+        ? 'border-accent/50'
         : status === 'failed'
-          ? 'border-red-500'
-          : 'border-gray-600';
-
-  const grouped = verdict
-    ? {
-        critical: verdict.findings.filter((f) => f.severity === 'critical'),
-        major: verdict.findings.filter((f) => f.severity === 'major'),
-        minor: verdict.findings.filter((f) => f.severity === 'minor'),
-      }
-    : null;
+          ? 'border-status-fail/50'
+          : 'border-border-default';
 
   return (
     <div
-      className={`w-[420px] rounded-xl border-2 p-3 text-xs bg-gray-900 shadow-lg transition-all duration-300 animate-node-entrance ${borderColor}`}
+      className={`relative w-[720px] rounded-lg border p-5 bg-surface-1 transition-all duration-300 animate-node-entrance ${borderClass}`}
+      style={{
+        outline: '1px solid rgba(90,69,48,0.3)',
+        outlineOffset: '2px',
+        boxShadow: isRunning
+          ? '0 2px 8px rgba(0,0,0,0.6), 0 0 20px rgba(200,144,42,0.3), inset 0 1px 0 rgba(240,228,200,0.04)'
+          : status === 'complete'
+            ? '0 2px 8px rgba(0,0,0,0.6), 0 0 12px rgba(200,144,42,0.15), inset 0 1px 0 rgba(240,228,200,0.04)'
+            : '0 2px 8px rgba(0,0,0,0.6), inset 0 1px 0 rgba(240,228,200,0.04)',
+      }}
     >
       <Handle type="target" position={Position.Top} className="opacity-0" />
-      <div className="flex items-center gap-2 mb-1 flex-wrap">
-        {status === 'running' ? (
-          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400 shrink-0" />
+      {data.onInfoClick && <InfoButton onClick={data.onInfoClick} />}
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        {isRunning ? (
+          <span className="h-2.5 w-2.5 rounded-full shrink-0 animate-status-pulse" style={{ backgroundColor: 'var(--color-accent)' }} />
         ) : status === 'complete' ? (
-          <span className="h-2 w-2 rounded-full bg-purple-400 shrink-0" />
+          <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: 'var(--color-accent)' }} />
         ) : status === 'failed' ? (
-          <span className="h-2 w-2 rounded-full bg-red-400 shrink-0" />
+          <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: 'var(--color-status-fail)' }} />
         ) : (
-          <span className="h-2 w-2 rounded-full bg-gray-500 shrink-0" />
+          <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: 'var(--color-text-ghost)' }} />
         )}
-        <span className="font-bold text-gray-100 uppercase tracking-wide text-[11px]">
+        <span className="font-heading font-bold text-text-primary uppercase tracking-[0.06em] text-sm">
           Synthesis
         </span>
-        <ActivityBadge deep />
-        {status === 'complete' && verdict && (
-          <span className="ml-auto text-purple-400 text-[10px]">
-            {verdict.findings.length} finding
-            {verdict.findings.length !== 1 ? 's' : ''}
-          </span>
-        )}
       </div>
-      <p className="text-gray-500 text-[10px] italic mb-2">
-        Reconciles all findings and rulings into a structured verdict.
-      </p>
-
-      {status === 'running' && partialOutput && (
-        <div className="rounded bg-gray-800 p-2 max-h-28 overflow-hidden text-gray-300 leading-relaxed mb-2">
-          <span className="line-clamp-5">{partialOutput}</span>
-          <span className="animate-pulse">&#9612;</span>
+      {isRunning && partialOutput && (
+        <div className="rounded-md bg-surface-2 p-3 max-h-64 overflow-y-auto noDrag nowheel text-text-secondary text-[13px] leading-relaxed mb-3" style={{ fontFamily: 'var(--font-body)' }}>
+          {partialOutput}
+          <span className="animate-cursor-blink">▌</span>
         </div>
       )}
-      {status === 'running' && !partialOutput && (
-        <p className="text-blue-400 italic">
-          Reconciling all findings<span className="animate-pulse">&hellip;</span>
+      {isRunning && !partialOutput && (
+        <p className="text-accent italic text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>
+          Reconciling all findings...
         </p>
       )}
       {status === 'failed' && (
-        <p className="text-red-400 italic">Synthesis failed.</p>
+        <p className="text-status-fail italic text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>Synthesis failed.</p>
       )}
 
       {status === 'complete' && verdict && (
-        <div className="space-y-2 max-h-64 overflow-y-auto">
-          {verdict.summary && (
-            <p className="text-gray-300 leading-relaxed border-l-2 border-purple-700 pl-2 text-[10px]">
-              {verdict.summary}
-            </p>
-          )}
-
-          {grouped && grouped.critical.length > 0 && (
-            <div>
-              <p className="text-red-400 text-[9px] uppercase font-semibold mb-0.5">
-                Critical
-              </p>
-              <VerdictFindingList findings={grouped.critical} />
-            </div>
-          )}
-          {grouped && grouped.major.length > 0 && (
-            <div>
-              <p className="text-orange-400 text-[9px] uppercase font-semibold mb-0.5">
-                Major
-              </p>
-              <VerdictFindingList findings={grouped.major} />
-            </div>
-          )}
-          {grouped && grouped.minor.length > 0 && (
-            <div>
-              <p className="text-yellow-400 text-[9px] uppercase font-semibold mb-0.5">
-                Minor
-              </p>
-              <VerdictFindingList findings={grouped.minor} />
-            </div>
-          )}
-          {grouped &&
-            grouped.critical.length === 0 &&
-            grouped.major.length === 0 &&
-            grouped.minor.length === 0 && (
-              <p className="text-gray-500 italic">No findings.</p>
-            )}
+        <div className="noDrag nowheel">
+          <VerdictDocument findings={verdict.findings} summary={verdict.summary} />
         </div>
       )}
 
       {status === 'complete' && (
-        <div className="mt-2 text-center">
-          <span className="rounded-full bg-purple-900/50 border border-purple-700 px-3 py-1 text-[10px] text-purple-300 font-semibold uppercase tracking-wide">
+        <div className="mt-8 mb-2 text-center">
+          <span
+            className="rounded-full border px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] font-heading"
+            style={{
+              borderColor: 'rgba(200, 144, 42, 0.3)',
+              backgroundColor: 'rgba(200, 144, 42, 0.08)',
+              color: 'var(--color-accent)',
+            }}
+          >
             Review Complete
           </span>
         </div>

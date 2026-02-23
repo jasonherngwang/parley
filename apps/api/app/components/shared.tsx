@@ -6,10 +6,7 @@ export type SpecialistStatus =
   | 'pending'
   | 'running'
   | 'complete'
-  | 'timed-out'
   | 'failed';
-
-export type MutineerStatus = 'pending' | 'running' | 'complete' | 'failed';
 
 export type SynthesisStatus = 'pending' | 'running' | 'complete' | 'failed';
 
@@ -23,31 +20,35 @@ export interface Finding {
 
 export interface SpecialistState {
   status: SpecialistStatus;
-  attemptNumber: number;
   partialOutput?: string;
   findings: Finding[] | null;
 }
 
-export interface MutineerChallenge {
-  findingId: string;
-  specialistName: string;
-  challengeText: string;
-}
+export type MutineerVerdict = 'agree' | 'disagree' | 'partial';
 
-export interface ArbitrationState {
+export interface FindingLifecycle {
   findingId: string;
-  status: 'pending' | 'running' | 'complete';
-  ruling?: 'upheld' | 'overturned' | 'inconclusive';
+  specialist: string;
+  severity: 'critical' | 'major' | 'minor';
+  description: string;
+  recommendation: string;
+  childWorkflowId: string;
+  childStatus: 'started' | 'complete' | 'failed';
+  mutineerChallenge?: string | null;
+  mutineerVerdict?: MutineerVerdict;
+  mutineerFailed?: boolean;
+  humanChallenge?: string | null;
+  ruling?: 'upheld' | 'overturned' | 'accepted';
   reasoning?: string;
-  challengeSources: Array<'mutineer' | 'human'>;
+  arbiterMutineerStance?: 'agrees' | 'disagrees' | 'mixed';
+  arbiterHumanStance?: 'agrees' | 'disagrees' | 'mixed';
 }
 
 export interface VerdictFinding {
   severity: 'critical' | 'major' | 'minor';
   specialist: string;
-  description: string;
-  ruling?: 'upheld' | 'overturned' | 'inconclusive';
-  challengeSources?: Array<'mutineer' | 'human'>;
+  ruling: 'upheld' | 'overturned' | 'accepted';
+  finding: string;
   recommendation: string;
 }
 
@@ -62,6 +63,26 @@ export interface Specialists {
   greenhand: SpecialistState;
 }
 
+export interface PhaseTiming {
+  fetchStartedAt?: string;
+  specialistsStartedAt?: string;
+  specialistsCompletedAt?: string;
+  findingsStartedAt?: string;
+  findingsCompletedAt?: string;
+  synthesisStartedAt?: string;
+  completedAt?: string;
+}
+
+export interface TemporalMeta {
+  workflowId: string;
+  runId: string;
+  taskQueue: string;
+  historyLength: number;
+  startedAt: string;
+  continueAsNewCount: number;
+  phaseTiming: PhaseTiming;
+}
+
 export type FloorOpenState = { type: 'floor-open' };
 export type RunningState = {
   type: 'running';
@@ -69,17 +90,16 @@ export type RunningState = {
   title?: string;
   repoName?: string;
   prNumber?: number;
+  fetchError?: string;
   specialists?: Specialists;
+  findings?: FindingLifecycle[];
   windowOpen?: boolean;
   secondsRemaining?: number;
   humanChallenges?: Record<string, string>;
-  mutineerStatus?: MutineerStatus;
-  mutineerPartialOutput?: string;
-  mutineerChallenges?: MutineerChallenge[];
-  arbitrations?: ArbitrationState[];
   synthesisStatus?: SynthesisStatus;
   synthesisPartialOutput?: string;
   verdict?: SynthesisVerdict;
+  temporal?: TemporalMeta;
 };
 export type CompleteState = {
   type: 'complete';
@@ -87,15 +107,15 @@ export type CompleteState = {
   title?: string;
   repoName?: string;
   prNumber?: number;
+  fetchError?: string;
   specialists?: Specialists;
+  findings?: FindingLifecycle[];
   windowOpen?: boolean;
   secondsRemaining?: number;
-  mutineerStatus?: MutineerStatus;
-  mutineerChallenges?: MutineerChallenge[];
-  arbitrations?: ArbitrationState[];
   synthesisStatus?: SynthesisStatus;
   synthesisPartialOutput?: string;
   verdict?: SynthesisVerdict;
+  temporal?: TemporalMeta;
 };
 export type AppState = FloorOpenState | RunningState | CompleteState;
 
@@ -121,32 +141,31 @@ export interface PastReview {
 export function statusColor(status: SpecialistStatus): string {
   switch (status) {
     case 'pending':
-      return 'border-gray-600 bg-gray-900';
+      return 'border-border-default bg-surface-1';
     case 'running':
-      return 'border-blue-500 bg-gray-900';
+      return 'border-accent/50 bg-surface-1';
     case 'complete':
-      return 'border-green-500 bg-gray-900';
-    case 'timed-out':
-      return 'border-yellow-500 bg-gray-900';
+      return 'border-status-done/40 bg-surface-1';
     case 'failed':
-      return 'border-red-500 bg-gray-900';
+      return 'border-status-fail/50 bg-surface-1';
   }
 }
 
 export function statusDot(status: SpecialistStatus) {
   switch (status) {
     case 'pending':
-      return <span className="h-2 w-2 rounded-full bg-gray-500 shrink-0" />;
+      return <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: 'var(--color-text-ghost)' }} />;
     case 'running':
       return (
-        <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400 shrink-0" />
+        <span
+          className="h-2.5 w-2.5 rounded-full shrink-0 animate-status-pulse"
+          style={{ backgroundColor: 'var(--color-accent)' }}
+        />
       );
     case 'complete':
-      return <span className="h-2 w-2 rounded-full bg-green-400 shrink-0" />;
-    case 'timed-out':
-      return <span className="h-2 w-2 rounded-full bg-yellow-400 shrink-0" />;
+      return <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: 'var(--color-status-done)' }} />;
     case 'failed':
-      return <span className="h-2 w-2 rounded-full bg-red-400 shrink-0" />;
+      return <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: 'var(--color-status-fail)' }} />;
   }
 }
 
@@ -166,33 +185,32 @@ export function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function rulingBadge(ruling?: ArbitrationState['ruling']) {
+export function findingRulingBadge(ruling?: FindingLifecycle['ruling']) {
   if (!ruling) return null;
   const colors: Record<string, string> = {
-    upheld: 'bg-red-900 text-red-300 border-red-700',
-    overturned: 'bg-green-900 text-green-300 border-green-700',
-    inconclusive: 'bg-gray-800 text-gray-400 border-gray-600',
+    upheld: 'text-status-fail',
+    overturned: 'text-status-done',
+    accepted: 'text-text-tertiary',
   };
   return (
     <span
-      className={`inline-block rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${colors[ruling] ?? colors['inconclusive']}`}
+      className={`text-[10px] font-semibold uppercase tracking-wide font-heading ${colors[ruling] ?? colors['accepted']}`}
     >
       {ruling}
     </span>
   );
 }
 
-export function verdictRulingBadge(ruling?: VerdictFinding['ruling']) {
+export function verdictRulingBadge(ruling?: FindingLifecycle['ruling']) {
   if (!ruling) return null;
-  const cfg: Record<string, { bg: string; text: string }> = {
-    upheld: { bg: 'bg-red-900 border-red-700', text: 'text-red-300' },
-    overturned: { bg: 'bg-green-900 border-green-700', text: 'text-green-300' },
-    inconclusive: { bg: 'bg-gray-800 border-gray-600', text: 'text-gray-400' },
+  const colors: Record<string, string> = {
+    upheld: 'text-status-fail',
+    overturned: 'text-status-done',
+    accepted: 'text-text-tertiary',
   };
-  const s = cfg[ruling] ?? cfg['inconclusive'];
   return (
     <span
-      className={`inline-block rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${s.bg} ${s.text}`}
+      className={`text-[10px] font-semibold uppercase tracking-wide font-heading ${colors[ruling] ?? colors['accepted']}`}
     >
       {ruling}
     </span>
@@ -201,145 +219,261 @@ export function verdictRulingBadge(ruling?: VerdictFinding['ruling']) {
 
 // ── Temporal primitive badges ──────────────────────────────────────────────────
 
+const badgeBase = 'rounded-full border border-border-default bg-surface-2 px-2 py-0.5 text-[10px] font-mono text-text-tertiary';
+
 export function ActivityBadge({ deep }: { deep?: boolean }) {
-  return deep ? (
-    <span className="rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide bg-purple-900 text-purple-300 border-purple-700">
-      Activity &middot; deep queue
-    </span>
-  ) : (
-    <span className="rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide bg-blue-900 text-blue-300 border-blue-700">
-      Activity
+  return (
+    <span className={badgeBase}>
+      {deep ? 'Activity · deep queue' : 'Activity'}
     </span>
   );
+}
+
+export function ChildWorkflowBadge() {
+  return <span className={badgeBase}>Child Workflow</span>;
 }
 
 export function TimerBadge() {
-  return (
-    <span className="rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide bg-teal-900 text-teal-300 border-teal-700">
-      Timer
-    </span>
-  );
+  return <span className={badgeBase}>Timer</span>;
 }
 
 export function SignalBadge() {
+  return <span className={badgeBase}>Signal</span>;
+}
+
+export function UpdateBadge() {
+  return <span className={badgeBase}>Update</span>;
+}
+
+// ── InfoButton ───────────────────────────────────────────────────────────────
+
+export function InfoButton({ onClick }: { onClick: (e: React.MouseEvent) => void }) {
   return (
-    <span className="rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide bg-amber-900 text-amber-300 border-amber-700">
-      Signal
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(e);
+      }}
+      className="absolute top-2 right-2 h-5 w-5 rounded-full border border-border-default bg-surface-2 text-text-tertiary hover:border-accent/50 hover:text-accent transition-colors flex items-center justify-center text-[10px] font-bold leading-none z-10 noDrag"
+      style={{ fontFamily: 'var(--font-mono)' }}
+      title="What's this?"
+      aria-label="Learn more"
+    >
+      i
+    </button>
+  );
+}
+
+// ── FindingIdBadge ───────────────────────────────────────────────────────────
+
+export const SPECIALIST_BADGE_COLORS: Record<string, string> = {
+  ironjaw: 'border-[#7A3528] bg-[#7A3528]/10 text-[#C46858]',
+  barnacle: 'border-[#365238] bg-[#365238]/10 text-[#628A6A]',
+  greenhand: 'border-[#2A4258] bg-[#2A4258]/10 text-[#507898]',
+};
+
+export function FindingIdBadge({ findingId }: { findingId: string }) {
+  const prefix = findingId.split('-')[0];
+  const colors = SPECIALIST_BADGE_COLORS[prefix] ?? 'border-border-default bg-surface-2 text-text-tertiary';
+  return (
+    <span
+      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-semibold tracking-tight shrink-0 ${colors}`}
+      style={{ fontFamily: 'var(--font-mono)' }}
+    >
+      {findingId}
     </span>
   );
 }
 
-export function UpdateBadge() {
-  return (
-    <span className="rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide bg-violet-900 text-violet-300 border-violet-700">
-      Update
-    </span>
-  );
-}
+export const SEVERITY_PRIORITY: Record<string, number> = {
+  critical: 0,
+  major: 1,
+  minor: 2,
+};
 
 // ── Educational "Why" content ──────────────────────────────────────────────────
 
 export interface WhyCopy {
   title: string;
   paragraphs: string[];
+  config?: Array<{ label: string; value: string }>;
 }
 
 export const WHY_COPY: Record<string, WhyCopy> = {
   pr: {
-    title: 'Workflow Input — PR Submission',
+    title: 'PR Fetch',
     paragraphs: [
-      'This node represents the workflow input. The PR URL is validated, then the diff is fetched via a Temporal Activity (fetchGitHubPRDiff).',
-      'If the fetch fails (network error, private repo), Temporal retries up to 2 times with 1-second backoff before reporting an error.',
+      'Submitting a PR URL kicks off the review workflow. The diff is fetched from GitHub\'s API — this is a Temporal Activity, the basic unit of retryable, timeout-bounded work.',
+      'If the network fails or GitHub rate-limits the request, Temporal retries automatically without the workflow losing its place.',
+    ],
+    config: [
+      { label: 'Task Queue', value: 'review-fast' },
+      { label: 'Timeout', value: '45s' },
+      { label: 'Heartbeat', value: '15s' },
+      { label: 'Retries', value: '2 × 1s backoff' },
     ],
   },
   'specialist-ironjaw': {
-    title: 'IRONJAW — Security Auditor',
+    title: 'Ironjaw — Security Researcher',
     paragraphs: [
-      'IRONJAW is a Temporal Activity \u2014 a regular async function that can fail, be retried, and heartbeat progress back to the workflow.',
-      'Retry policy: up to 3 attempts, 2-second backoff that doubles each retry. Heartbeat timeout: 15 seconds. If no heartbeat arrives within that window, Temporal assumes the activity is stuck and re-schedules it on another worker.',
-      'Why the fast queue? Gemini Flash Lite is lightweight and fast \u2014 ideal for running three reviewers in parallel without burning through budget.',
-      'If this worker crashes right now, Temporal detects the missed heartbeat within 15 seconds and automatically re-dispatches the activity to another available worker. Your workflow state is safe.',
+      'Ironjaw reviews the diff through an attacker\'s eyes: injection flaws, broken authentication, exposed secrets, privilege escalation, SSRF, XSS.',
+      'All three specialists are dispatched simultaneously the moment the diff is ready. Each runs as an independent Activity — if one is slow or fails, the others are unaffected.',
+      'During the LLM call, the activity sends a periodic liveness ping to Temporal to signal it\'s still running and prevent a timeout. Once the full response is ready, a second LLM call extracts up to two structured findings.',
+    ],
+    config: [
+      { label: 'Task Queue', value: 'review-fast' },
+      { label: 'Model', value: 'Gemini Flash Lite' },
+      { label: 'Timeout', value: '45s' },
+      { label: 'Heartbeat', value: '15s' },
+      { label: 'Retries', value: '3 × 2s exp. backoff' },
     ],
   },
   'specialist-barnacle': {
-    title: 'BARNACLE — Complexity Skeptic',
+    title: 'Barnacle — Complexity Skeptic',
     paragraphs: [
-      'BARNACLE is a Temporal Activity running on the same fast task queue as IRONJAW and GREENHAND. All three start simultaneously the moment the PR diff is fetched.',
-      'Retry policy: up to 3 attempts, 2-second initial backoff with exponential increase. Heartbeat timeout: 15 seconds.',
-      'BARNACLE streams its ship\'s log back to the workflow via heartbeat metadata, which is forwarded to the UI as partial output in real time.',
-      'The finding schema enforces structured output: severity, description, line reference, and recommendation \u2014 extracted via a second LLM call after streaming completes.',
+      'Barnacle has seen every clever abstraction turn into unmaintainable rot. Focuses on over-engineering, hidden coupling, tangled dependencies, and complexity that doesn\'t carry its weight.',
+      'All three specialists are dispatched simultaneously the moment the diff is ready. Each runs as an independent Activity — if one is slow or fails, the others are unaffected.',
+      'During the LLM call, the activity sends a periodic liveness ping to Temporal to signal it\'s still running and prevent a timeout. Once the full response is ready, a second LLM call extracts up to two structured findings.',
+    ],
+    config: [
+      { label: 'Task Queue', value: 'review-fast' },
+      { label: 'Model', value: 'Gemini Flash Lite' },
+      { label: 'Timeout', value: '45s' },
+      { label: 'Heartbeat', value: '15s' },
+      { label: 'Retries', value: '3 × 2s exp. backoff' },
     ],
   },
   'specialist-greenhand': {
-    title: 'GREENHAND — Domain Reviewer',
+    title: 'Greenhand — Junior Reviewer',
     paragraphs: [
-      'GREENHAND is the third parallel specialist Activity, reading the diff from a junior\'s literal perspective.',
-      'All three specialists are dispatched with Promise.all \u2014 if one is rate-limited or slow, the other two proceed independently.',
-      'Each specialist is wrapped in a CancellationScope.withTimeout(45s). If the 45-second deadline passes, Temporal cancels the scope and marks the slot timed-out \u2014 the join gate still fires when the other two complete.',
-      'Finding IDs are prefixed by specialist: greenhand-1, greenhand-2, etc. This makes it easy to trace a finding through the arbitration and synthesis stages.',
+      'Greenhand reads the code literally and asks the questions veterans skip over: missing null checks, unhandled errors, unclear names, undocumented assumptions, missing tests.',
+      'All three specialists are dispatched simultaneously the moment the diff is ready. Each runs as an independent Activity — if one is slow or fails, the others are unaffected.',
+      'During the LLM call, the activity sends a periodic liveness ping to Temporal to signal it\'s still running and prevent a timeout. Once the full response is ready, a second LLM call extracts up to two structured findings.',
+    ],
+    config: [
+      { label: 'Task Queue', value: 'review-fast' },
+      { label: 'Model', value: 'Gemini Flash Lite' },
+      { label: 'Timeout', value: '45s' },
+      { label: 'Heartbeat', value: '15s' },
+      { label: 'Retries', value: '3 × 2s exp. backoff' },
     ],
   },
-  joingate: {
-    title: 'Join Gate — Synchronization Barrier',
+  childWorkflow: {
+    title: 'Per-Finding Child Workflow',
     paragraphs: [
-      'A join gate waits for all upstream activities to complete (or time out) before the workflow proceeds.',
-      'This is implemented with Promise.all in the workflow code. Temporal guarantees that even if a worker crashes mid-wait, the gate state is fully reconstructed on replay.',
-      'Each completed input fills a progress segment. When all inputs resolve, the gate opens and the next pipeline stage begins.',
+      'Each finding gets its own child workflow, spawned by the parent immediately after all specialists complete. The parent fans out to N children — one per finding — and tracks each independently.',
+      'Inside each child: the Mutineer runs first, while the human review window is open in the parent. Once the window closes, the parent sends each child the human\'s input. If either the Mutineer or the human filed a challenge, the Arbiter runs. If neither did, the finding is accepted as-is.',
+      'Child workflows are isolated — a failure in one doesn\'t affect the parent or any other finding. The parent waits for all children to finish before proceeding to Synthesis.',
     ],
-  },
-  mutineer: {
-    title: 'THE MUTINEER — Dispute Orchestrator',
-    paragraphs: [
-      'THE MUTINEER runs in parallel with the human review window. It independently decides which findings to challenge \u2014 it doesn\'t fill in for the human, it has its own opinion.',
-      'Both THE MUTINEER and the human can challenge the same finding. The arbitrator receives all challenges for a finding and rules once \u2014 it sees whether the challenge came from Mutineer, human, or both.',
-      'This is also a Temporal Activity: same retry policy as the specialists, on the fast queue. The Mutineer streams its reasoning back via heartbeat, just like the specialists do.',
+    config: [
+      { label: 'Signal in', value: 'provideHumanInput' },
     ],
   },
   humanwindow: {
-    title: 'Human Review Window — Timer + Signal + Update',
+    title: 'Human Review Window',
     paragraphs: [
-      'This node demonstrates three Temporal primitives in one place.',
-      'The countdown is a durable Timer (wf.sleep). If the server restarts, the timer resumes exactly where it left off \u2014 no time drift.',
-      'The "Extend" button sends a Signal: fire-and-forget, no validation, no response. The event is in Temporal history the instant it arrives.',
-      'The "Submit" button sends an Update: synchronous, validated, acknowledged. The workflow confirms acceptance before the UI shows success.',
+      'The countdown is a durable timer. Temporal records the deadline in the workflow\'s event history — if the server restarts mid-countdown, execution resumes exactly where it left off with no drift.',
+      '"Extend" sends a Signal — a one-way message the workflow records immediately. The deadline is pushed out by 2 minutes. No acknowledgment is returned.',
+      '"Submit" sends an Update — unlike a signal, the workflow validates and acknowledges the submission before the UI marks success. If the window has already closed, the Update returns an error instead of silently dropping the input.',
+    ],
+    config: [
+      { label: 'Timer', value: '10 min (durable)' },
+      { label: 'Signal', value: 'extendWindow (+2m)' },
+      { label: 'Update', value: 'submitChallenges' },
     ],
   },
-  signal: {
-    title: 'Signal — Extend Window',
+  mutineer: {
+    title: 'Mutineer — Devil\'s Advocate',
     paragraphs: [
-      'Fire-and-forget. No validation, no response. The workflow receives the Signal and adds 2 minutes to the countdown.',
-      'Durable: this event is recorded in Temporal\'s event history the instant it arrives \u2014 even before the workflow task has processed it.',
-      'Because Signals are asynchronous, there is no way to reject one from the caller\'s side. Any validation must happen inside the workflow handler after the fact.',
-      'The Signal handler is registered before any await in the workflow, so it can never be missed \u2014 even if the Signal arrives while the workflow is processing something else.',
+      'The Mutineer scrutinizes each finding against the actual code. It looks for evidence in the diff — does the code really support the finding, or does the finding overstate or misread it?',
+      'The Mutineer runs as soon as the child workflow starts, concurrently with the human review window. The AI challenge and the human challenge are gathered in parallel, not sequentially.',
+      'If the finding is sound, the Mutineer concedes. The Arbiter only runs if at least one challenge exists — so an unchallenged finding skips arbitration entirely.',
+    ],
+    config: [
+      { label: 'Task Queue', value: 'review-fast' },
+      { label: 'Model', value: 'Gemini Flash Lite' },
+      { label: 'Timeout', value: '90s' },
+      { label: 'Heartbeat', value: '15s' },
+      { label: 'Retries', value: '3 × 2s exp. backoff' },
     ],
   },
-  update: {
-    title: 'Update — Submit Challenges',
+  arbiter: {
+    title: 'Arbiter — The Judge',
     paragraphs: [
-      'Synchronous and acknowledged. Unlike a Signal, an Update waits for the workflow to accept or reject the request before returning to the caller.',
-      'The workflow processed your challenge map and stored it in state. You received { accepted: true } because the Update handler completed successfully.',
-      'If the workflow had rejected the Update (for example, because the window was already closed), you would have received an error response instead.',
-      'Updates are recorded in Temporal\'s event history just like Signals \u2014 fully durable and replayable during workflow reconstruction.',
+      'The Arbiter reads the original finding alongside all submitted challenges and produces a ruling: upheld (the finding stands) or overturned (the finding is dismissed).',
+      'It only runs when at least one challenge exists — from the Mutineer, the human reviewer, or both. An unchallenged finding is accepted as-is with no Arbiter call.',
+      'The Arbiter has access to the original diff and weighs each challenge on its merits, noting its stance toward the Mutineer and the human separately.',
     ],
-  },
-  arbitrator: {
-    title: 'Arbitrator — Dynamic Dispatch',
-    paragraphs: [
-      'One Arbitrator Activity is dispatched per disputed finding. The exact count is not known until both THE MUTINEER and the human review window have closed.',
-      'All arbitrators run in parallel \u2014 a finding challenged by both Mutineer and human resolves at the same time as one challenged only by the Mutineer.',
-      'Gemini Flash Lite is sufficient here: the ruling is bounded (upheld / overturned / inconclusive) and the arbitrator weighs at most two short challenge arguments against the original finding.',
-      'If all retry attempts are exhausted, the ruling falls back to "inconclusive" \u2014 the workflow continues regardless. A single arbitrator failure never blocks the review.',
+    config: [
+      { label: 'Task Queue', value: 'review-fast' },
+      { label: 'Model', value: 'Gemini Flash Lite' },
+      { label: 'Timeout', value: '30s' },
+      { label: 'Retries', value: '3 × 2s exp. backoff' },
     ],
   },
   synthesis: {
-    title: 'Synthesis — Final Verdict',
+    title: 'Synthesis',
     paragraphs: [
-      'Synthesis reads every specialist finding and every arbitration outcome, then reconciles them into a single structured verdict.',
-      'This is the only activity on the review-deep task queue. It uses Gemini Pro \u2014 the heavier model is warranted for the holistic reconciliation step where all evidence must be weighed together.',
-      'Synthesis streams its reasoning back via heartbeat, then produces a structured verdict with per-finding severity, ruling, challenge sources, and recommendation.',
-      'The workflow waits for all signal/update handlers to finish before calling Synthesis \u2014 ensuring the final state snapshot is complete before the verdict is generated.',
+      'After all child workflows complete, Synthesis reads every specialist finding and every arbitration outcome, then produces a structured verdict: an overall assessment and ranked action items.',
+      'It runs on a separate worker pool from the specialists and child workflows. This prevents a slow, expensive Gemini Pro call from tying up workers that need to stay responsive during the review.',
+      'The workflow waits until all in-flight signals and updates have fully resolved before invoking Synthesis, so no challenge input can be missed.',
+    ],
+    config: [
+      { label: 'Task Queue', value: 'review-deep' },
+      { label: 'Model', value: 'Gemini Pro' },
+      { label: 'Timeout', value: '3m' },
+      { label: 'Heartbeat', value: '60s' },
+      { label: 'Retries', value: '2 × 5s backoff' },
     ],
   },
+};
+
+// ── MetaChip ─────────────────────────────────────────────────────────────────
+
+export function MetaChip({ label, value }: { label: string; value: string }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded border border-border-subtle bg-surface-2 px-1.5 py-0.5 text-[9px] text-text-tertiary"
+      style={{ fontFamily: 'var(--font-mono)' }}
+    >
+      <span className="text-text-ghost">{label}</span>
+      {value}
+    </span>
+  );
+}
+
+export const NODE_META: Record<string, Array<{ label: string; value: string }>> = {
+  pr: [
+    { label: 'Queue', value: 'review-fast' },
+    { label: 'Timeout', value: '45s' },
+    { label: 'Retries', value: '2' },
+  ],
+  specialist: [
+    { label: 'Queue', value: 'review-fast' },
+    { label: 'Timeout', value: '45s' },
+    { label: 'Heartbeat', value: '15s' },
+    { label: 'Retries', value: '3' },
+  ],
+  finding: [
+    { label: 'Type', value: 'ChildWorkflow' },
+    { label: 'Queue', value: 'review-fast' },
+  ],
+  mutineer: [
+    { label: 'Type', value: 'Activity' },
+    { label: 'Queue', value: 'review-fast' },
+    { label: 'Signal', value: 'provideHumanInput' },
+  ],
+  humanwindow: [
+    { label: 'Timer', value: '10m durable' },
+    { label: 'Signal', value: 'extendWindow' },
+    { label: 'Update', value: 'submitChallenges' },
+  ],
+  synthesis: [
+    { label: 'Queue', value: 'review-deep' },
+    { label: 'Timeout', value: '3m' },
+    { label: 'Heartbeat', value: '60s' },
+    { label: 'Retries', value: '2' },
+  ],
 };
 
 // ── Specialist metadata ────────────────────────────────────────────────────────
@@ -352,16 +486,16 @@ export const SPECIALISTS: Array<{
   {
     key: 'ironjaw',
     name: 'IRONJAW',
-    character: "Paranoid. Finds what's rotten in the hold.",
+    character: 'Security researcher and penetration tester. Thinks like an attacker — hunts injection flaws, broken auth, exposed secrets, and privilege escalation.',
   },
   {
     key: 'barnacle',
     name: 'BARNACLE',
-    character: '20-year greybeard. Has seen this pattern sink ships before.',
+    character: '20-year greybeard complexity skeptic. Has seen this pattern sink ships before — spots over-engineering, tangled dependencies, and unmaintainable abstractions.',
   },
   {
     key: 'greenhand',
     name: 'GREENHAND',
-    character: 'Enthusiastic junior. First voyage. Reads code literally.',
+    character: 'Enthusiastic junior on their first voyage. Reads code literally — catches missing null checks, unhandled errors, unclear names, and missing tests.',
   },
 ];
